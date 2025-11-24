@@ -39,13 +39,13 @@
             agenix.nixosModules.default
 
             ./disk-config/hetzner-vps.nix
-            ./hosts/runner/configuration.nix
+            ./hosts/runner/github-runner-containerized.nix  # Using containerized runners
             ./hosts/runner/hardware-configuration-amd.nix
           ];
           specialArgs = {
             inherit inputs adminKeys;
             hostName = name;
-            runners = ["a" "b" "c" "d"];  # 4 runners - using concurrency groups to handle port conflicts
+            # Runners are now defined in github-runner-containerized.nix as containers
           };
         };
     in
