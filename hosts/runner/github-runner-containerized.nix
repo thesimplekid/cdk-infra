@@ -348,6 +348,7 @@ in
     isNormalUser = true;
     createHome = true;
     home = "/home/tsk";
+    shell = pkgs.fish;
     extraGroups = [ "wheel" ]; # Enable sudo for the user
     openssh.authorizedKeys.keys = adminKeys;
     hashedPassword = "!"; # Lock password login, only allow SSH key authentication
@@ -355,6 +356,9 @@ in
 
   # Allow wheel group to use sudo
   security.sudo.wheelNeedsPassword = false;
+
+  # Enable fish shell
+  programs.fish.enable = true;
 
   boot.kernelPackages = pkgs.linuxPackages_latest;
   boot.tmp.cleanOnBoot = true;
