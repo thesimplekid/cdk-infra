@@ -1,7 +1,6 @@
 { lib, pkgs, ... }:
 let
   cleanupTmp = "cleanup-tmp";
-  cleanupDocker = "cleanup-docker";
   gcNix = "gc-nix";
 in
 {
@@ -28,29 +27,6 @@ in
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnCalendar = "hourly";
-    };
-  };
-
-  systemd.services.${cleanupDocker} =
-    let
-      script = pkgs.writeShellScript "cleanup-docker" ''
-        ${pkgs.docker}/bin/docker image prune -af --filter "until=48h"
-      '';
-    in
-    {
-      description = "Clean up old docker images";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = script;
-        User = "root";
-      };
-    };
-
-  systemd.timers.${cleanupDocker} = {
-    description = "Timer for cleaning up /tmp files";
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "daily";
     };
   };
 

@@ -89,6 +89,7 @@ let
           autoPrune = {
             enable = true;
             dates = "daily";
+            flags = [ "--all" "--volumes" ];  # More aggressive: remove ALL images and volumes
           };
           # Use daemon settings optimized for container environment with cgroups v2
           daemon.settings = {
@@ -540,6 +541,49 @@ in
         echo ""
       done
     '')
+
+    (writeShellScriptBin "runner-disk-usage" ''
+      echo "Disk Usage for Runner Containers"
+      echo "================================="
+      echo ""
+      for runner in ${lib.concatStringsSep " " runnerNames}; do
+        echo "Container runner-$runner:"
+        if [ -d "/var/lib/nixos-containers/runner-$runner" ]; then
+          echo "  Total container size:"
+          du -sh /var/lib/nixos-containers/runner-$runner 2>/dev/null || echo "  Unable to calculate"
+          echo ""
+          echo "  Docker data breakdown:"
+          du -sh /var/lib/nixos-containers/runner-$runner/var/lib/docker/* 2>/dev/null | sort -hr | head -10 || echo "  No Docker data"
+          echo ""
+          echo "  Docker info:"
+          nixos-container run runner-$runner -- docker system df 2>/dev/null || echo "  Container not running"
+        else
+          echo "  Container directory does not exist"
+        fi
+        echo ""
+        echo "---"
+        echo ""
+      done
+    '')
+
+    (writeShellScriptBin "runner-cleanup-now" ''
+      if [ $# -eq 0 ]; then
+        echo "Usage: runner-cleanup-now <a|b|c|d|all>"
+        echo "Immediately run Docker cleanup on specified runner(s)"
+        exit 1
+      fi
+
+      if [ "$1" = "all" ]; then
+        for runner in ${lib.concatStringsSep " " runnerNames}; do
+          echo "Cleaning runner-$runner..."
+          nixos-container run runner-$runner -- docker system prune -af --volumes 2>/dev/null || echo "  Failed to clean runner-$runner"
+          echo ""
+        done
+      else
+        echo "Cleaning runner-$1..."
+        nixos-container run runner-$1 -- docker system prune -af --volumes
+      fi
+    '')
   ]);
 
   # Host-level services
@@ -551,7 +595,8 @@ in
         serviceConfig = {
           Type = "oneshot";
           ExecStart = "${pkgs.bash}/bin/bash -c '${lib.concatMapStringsSep " ; " (name:
-            "nixos-container run runner-${name} -- docker system prune -af 2>/dev/null || true"
+            "echo 'Cleaning runner-${name}...' && " +
+            "nixos-container run runner-${name} -- docker system prune -af --volumes 2>/dev/null || true"
           ) runnerNames}'";
         };
       };
@@ -566,7 +611,7 @@ in
   systemd.timers.cleanup-all-containers = {
     wantedBy = [ "timers.target" ];
     timerConfig = {
-      OnCalendar = "daily";
+      OnCalendar = "*-*-* 00,06,12,18:00:00";  # Run 4 times per day (midnight, 6am, noon, 6pm)
       Persistent = true;
     };
   };
