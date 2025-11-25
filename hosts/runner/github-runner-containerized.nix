@@ -471,22 +471,50 @@ in
     inputs.agenix.packages."${pkgs.system}".default
   ]) ++ (with pkgs; [
     (writeShellScriptBin "runner-status" ''
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: This command requires root privileges"
+        echo "Please run: sudo runner-status"
+        exit 1
+      fi
+
       echo "GitHub Runner Container Status"
       echo "=============================="
       echo ""
       for runner in ${lib.concatStringsSep " " runnerNames}; do
         echo "Container runner-$runner:"
-        systemctl is-active container@runner-$runner.service || true
-        if systemctl is-active container@runner-$runner.service >/dev/null 2>&1; then
-          echo "  Runner service:"
-          nixos-container run runner-$runner -- systemctl is-active github-runner-${hostName}-$runner || echo "  Not running"
+        CONTAINER_STATUS=$(systemctl is-active container@runner-$runner.service 2>/dev/null || echo "inactive")
+        echo "  Container: $CONTAINER_STATUS"
+
+        if [ "$CONTAINER_STATUS" = "active" ]; then
+          RUNNER_STATUS=$(nixos-container run runner-$runner -- systemctl is-active github-runner-${hostName}-$runner 2>/dev/null || echo "inactive")
+          echo "  Runner service: $RUNNER_STATUS"
           echo "  IP: $(nixos-container show-ip runner-$runner 2>/dev/null || echo 'N/A')"
+
+          # Show if runner is currently processing a job
+          if [ "$RUNNER_STATUS" = "active" ]; then
+            JOB_STATUS=$(nixos-container run runner-$runner -- journalctl -u github-runner-${hostName}-$runner -n 50 --no-pager 2>/dev/null | grep -i "running job" | tail -1 || echo "")
+            if [ -n "$JOB_STATUS" ]; then
+              echo "  Status: Running job"
+            else
+              echo "  Status: Idle/Waiting"
+            fi
+          fi
+        else
+          echo "  Container is not running"
         fi
         echo ""
       done
     '')
 
     (writeShellScriptBin "runner-logs" ''
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: This command requires root privileges"
+        echo "Please run: sudo runner-logs <a|b|c|d> [follow]"
+        exit 1
+      fi
+
       if [ $# -eq 0 ]; then
         echo "Usage: runner-logs <a|b|c|d> [follow]"
         echo "Example: runner-logs a follow"
@@ -496,7 +524,9 @@ in
       RUNNER=$1
       FOLLOW=""
       if [ "$2" = "follow" ]; then
-        FOLLOW="-f"
+        FOLLOW="-f -n 0"  # Follow from the end, showing only new entries
+      else
+        FOLLOW="-n 100 -r"  # Show last 100 lines in reverse chronological order
       fi
 
       if nixos-container run runner-$RUNNER -- true 2>/dev/null; then
@@ -508,6 +538,13 @@ in
     '')
 
     (writeShellScriptBin "runner-shell" ''
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: This command requires root privileges"
+        echo "Please run: sudo runner-shell <a|b|c|d>"
+        exit 1
+      fi
+
       if [ $# -eq 0 ]; then
         echo "Usage: runner-shell <a|b|c|d>"
         exit 1
@@ -516,6 +553,13 @@ in
     '')
 
     (writeShellScriptBin "runner-restart" ''
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: This command requires root privileges"
+        echo "Please run: sudo runner-restart <a|b|c|d|all>"
+        exit 1
+      fi
+
       if [ $# -eq 0 ]; then
         echo "Usage: runner-restart <a|b|c|d|all>"
         exit 1
@@ -533,6 +577,13 @@ in
     '')
 
     (writeShellScriptBin "runner-test-ports" ''
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: This command requires root privileges"
+        echo "Please run: sudo runner-test-ports"
+        exit 1
+      fi
+
       echo "Testing port availability in each container..."
       echo ""
       for runner in ${lib.concatStringsSep " " runnerNames}; do
@@ -550,6 +601,13 @@ in
     '')
 
     (writeShellScriptBin "runner-test-docker" ''
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: This command requires root privileges"
+        echo "Please run: sudo runner-test-docker"
+        exit 1
+      fi
+
       echo "Testing Docker functionality in each container..."
       echo ""
       for runner in ${lib.concatStringsSep " " runnerNames}; do
@@ -567,6 +625,13 @@ in
     '')
 
     (writeShellScriptBin "runner-disk-usage" ''
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: This command requires root privileges"
+        echo "Please run: sudo runner-disk-usage"
+        exit 1
+      fi
+
       echo "Disk Usage for Runner Containers"
       echo "================================="
       echo ""
@@ -591,6 +656,13 @@ in
     '')
 
     (writeShellScriptBin "runner-cleanup-now" ''
+      # Check if running as root
+      if [ "$EUID" -ne 0 ]; then
+        echo "Error: This command requires root privileges"
+        echo "Please run: sudo runner-cleanup-now <a|b|c|d|all>"
+        exit 1
+      fi
+
       if [ $# -eq 0 ]; then
         echo "Usage: runner-cleanup-now <a|b|c|d|all>"
         echo "Immediately run Docker cleanup on specified runner(s)"
