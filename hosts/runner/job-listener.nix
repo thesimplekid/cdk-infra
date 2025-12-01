@@ -14,6 +14,7 @@ let
   runnerLabels = [ "self-hosted" "ci" "nix" "x64" "Linux" ];
 
   # Container template - written to /etc/nixos/ci-container-template.nix
+  # Uses github-runner from nixpkgs (Runner.Listener binary)
   containerTemplate = ''
     { config, pkgs, lib, ... }:
     {
@@ -62,9 +63,11 @@ let
       };
 
       systemd.tmpfiles.rules = [
-        "d /home/github-runner/tmp 0755 github-runner github-runner -"
+        "d /home/github-runner 0755 github-runner github-runner -"
         "d /home/github-runner/.cache 0755 github-runner github-runner -"
+        "d /var/lib/github-runner 0755 github-runner github-runner -"
         "d /var/lib/github-runner-work 0755 github-runner github-runner -"
+        "d /var/log/github-runner 0755 github-runner github-runner -"
         "L+ /bin/bash - - - - /run/current-system/sw/bin/bash"
       ];
 
@@ -73,6 +76,7 @@ let
         gnutar gzip
         icu openssl zlib
         stdenv.cc.cc.lib
+        github-runner  # GitHub Actions runner from nixpkgs
       ];
 
       programs.nix-ld = {
@@ -96,11 +100,108 @@ let
         experimental-features = [ "nix-command" "flakes" ];
         trusted-users = [ "github-runner" ];
       };
+
+      # GitHub Actions Runner - using github-runner from nixpkgs
+      # This is designed for ephemeral containers with dynamic registration tokens
+      systemd.services.github-runner = {
+        description = "GitHub Actions Runner";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network-online.target" "docker.service" ];
+        wants = [ "network-online.target" ];
+
+        path = with pkgs; [
+          bashInteractive coreutils curl gnutar gzip git docker nix jq findutils
+          inetutils  # provides hostname
+          github-runner
+        ];
+
+        environment = {
+          HOME = "/var/lib/github-runner";
+          RUNNER_ROOT = "/var/lib/github-runner";
+        };
+
+        script = '''
+          set -euo pipefail
+
+          RUNNER_NAME="$(hostname)"
+          GITHUB_REPO="thesimplekid/cdk"
+          TOKEN_FILE="/var/lib/github-runner-token"
+          STATE_DIR="/var/lib/github-runner"
+          WORK_DIR="/var/lib/github-runner-work"
+          LOGS_DIR="/var/log/github-runner"
+
+          echo "Waiting for network..."
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 5 https://api.github.com > /dev/null 2>&1; then
+              echo "Network is ready"
+              break
+            fi
+            echo "Waiting for network... attempt $i"
+            sleep 2
+          done
+
+          echo "Waiting for registration token..."
+          for i in $(seq 1 30); do
+            if [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
+              break
+            fi
+            echo "Waiting for token file... attempt $i"
+            sleep 1
+          done
+
+          if [ ! -f "$TOKEN_FILE" ] || [ ! -s "$TOKEN_FILE" ]; then
+            echo "ERROR: Token file not found or empty: $TOKEN_FILE"
+            exit 1
+          fi
+
+          REG_TOKEN=$(cat "$TOKEN_FILE")
+
+          # Clean state for ephemeral runner
+          find "$STATE_DIR/" -mindepth 1 -delete 2>/dev/null || true
+          find "$WORK_DIR/" -mindepth 1 -delete 2>/dev/null || true
+
+          echo "Configuring runner $RUNNER_NAME..."
+          cd "$STATE_DIR"
+          config.sh \
+            --unattended \
+            --disableupdate \
+            --work "$WORK_DIR" \
+            --url "https://github.com/$GITHUB_REPO" \
+            --labels "self-hosted,ci,nix,x64,Linux" \
+            --name "$RUNNER_NAME" \
+            --replace \
+            --ephemeral \
+            --token "$REG_TOKEN"
+
+          # Move _diag to logs dir
+          mkdir -p "$LOGS_DIR"
+          if [ -d "$STATE_DIR/_diag" ]; then
+            cp -r "$STATE_DIR/_diag/." "$LOGS_DIR/" || true
+            rm -rf "$STATE_DIR/_diag"
+          fi
+
+          echo "Starting runner..."
+          exec Runner.Listener run --startuptype service
+        ''';
+
+        serviceConfig = {
+          Type = "simple";
+          User = "github-runner";
+          WorkingDirectory = "/var/lib/github-runner";
+          Restart = "no";  # Don't restart - ephemeral runner exits after one job
+          StateDirectory = "github-runner";
+          LogsDirectory = "github-runner";
+          RuntimeDirectory = "github-runner";
+          KillSignal = "SIGINT";
+        };
+      };
     }
   '';
 
-  # nspawn configuration for Docker support
-  nspawnConfig = ''
+  # nspawn configuration for Docker support (generated per-container with token path)
+  # The TOKEN_FILE_PATH placeholder gets replaced with the actual path at runtime
+  # Note: Network settings are handled by nixos-container, not nspawn config
+  nspawnConfigTemplate = ''
     [Exec]
     SystemCallFilter=add_key keyctl bpf
     Capability=all
@@ -111,9 +212,6 @@ let
     BindReadOnly=/lib/modules
     BindReadOnly=/run/secrets
     BindReadOnly=/run/agenix
-
-    [Network]
-    Private=yes
   '';
 
   # Convert runner labels to JSON array for comparison
@@ -230,6 +328,7 @@ let
       local job_id=$1
       local container_name=$(job_id_to_container_name "$job_id")
       local subnet_octet=$(get_free_subnet)
+      local token_file="$STATE_DIR/$container_name.token"
 
       log "Spawning container $container_name for job $job_id (subnet 192.168.$subnet_octet.0/24)"
 
@@ -247,10 +346,27 @@ let
       # Clean up any leftover network interface from previous failed attempts
       ${pkgs.iproute2}/bin/ip link delete "ve-$container_name" 2>/dev/null || true
 
-      # Write nspawn configuration
+      # Get registration token and write to file
+      log "Getting registration token for $container_name..."
+      local reg_token=$(get_registration_token)
+      if [ -z "$reg_token" ] || [ "$reg_token" = "null" ]; then
+        log "ERROR: Failed to get registration token"
+        return 1
+      fi
+      echo "$reg_token" > "$token_file"
+      ${pkgs.coreutils}/bin/chmod 644 "$token_file"
+
+      # Verify token file was created
+      if [ ! -f "$token_file" ]; then
+        log "ERROR: Token file was not created at $token_file"
+        return 1
+      fi
+      log "Token file created: $token_file"
+
+      # Write nspawn configuration for Docker support
       ${pkgs.coreutils}/bin/mkdir -p /etc/systemd/nspawn
       ${pkgs.coreutils}/bin/cat > "/etc/systemd/nspawn/$container_name.nspawn" << 'NSPAWN'
-${nspawnConfig}
+${nspawnConfigTemplate}
 NSPAWN
 
       # Create container
@@ -260,85 +376,48 @@ NSPAWN
         --host-address "192.168.$subnet_octet.10"; then
         log "ERROR: Failed to create container $container_name"
         ${pkgs.coreutils}/bin/rm -f "/etc/systemd/nspawn/$container_name.nspawn"
+        ${pkgs.coreutils}/bin/rm -f "$token_file"
         return 1
       fi
 
-      # Start container
+      # Write token directly into container's filesystem (before starting)
+      local container_root="/var/lib/nixos-containers/$container_name"
+      ${pkgs.coreutils}/bin/mkdir -p "$container_root/var/lib"
+
+      # Verify token file still exists before copying
+      if [ ! -f "$token_file" ]; then
+        log "ERROR: Token file disappeared before copy: $token_file"
+        $NIXOS_CONTAINER destroy "$container_name" 2>/dev/null || true
+        ${pkgs.coreutils}/bin/rm -f "/etc/systemd/nspawn/$container_name.nspawn"
+        return 1
+      fi
+
+      if ! ${pkgs.coreutils}/bin/cp "$token_file" "$container_root/var/lib/github-runner-token"; then
+        log "ERROR: Failed to copy token file to container"
+        $NIXOS_CONTAINER destroy "$container_name" 2>/dev/null || true
+        ${pkgs.coreutils}/bin/rm -f "/etc/systemd/nspawn/$container_name.nspawn"
+        ${pkgs.coreutils}/bin/rm -f "$token_file"
+        return 1
+      fi
+      ${pkgs.coreutils}/bin/chmod 644 "$container_root/var/lib/github-runner-token"
+      log "Token written to $container_root/var/lib/github-runner-token"
+
+      # Start container - the NixOS github-runner service will handle registration and job execution
       if ! $NIXOS_CONTAINER start "$container_name"; then
         log "ERROR: Failed to start container $container_name"
         $NIXOS_CONTAINER destroy "$container_name" 2>/dev/null || true
         ${pkgs.coreutils}/bin/rm -f "/etc/systemd/nspawn/$container_name.nspawn"
+        ${pkgs.coreutils}/bin/rm -f "$token_file"
         ${pkgs.coreutils}/bin/rm -rf "/nix/var/nix/profiles/per-container/$container_name" 2>/dev/null || true
         ${pkgs.coreutils}/bin/rm -rf "/var/lib/nixos-containers/$container_name" 2>/dev/null || true
         return 1
       fi
 
-      # Wait for Docker to be ready
-      log "Waiting for Docker daemon in $container_name..."
-      local retries=0
-      while ! $NIXOS_CONTAINER run "$container_name" -- docker info &>/dev/null; do
-        retries=$((retries + 1))
-        if [ $retries -gt 30 ]; then
-          log "ERROR: Docker failed to start in $container_name after 30s"
-          $NIXOS_CONTAINER stop "$container_name" 2>/dev/null || true
-          $NIXOS_CONTAINER destroy "$container_name" 2>/dev/null || true
-          ${pkgs.coreutils}/bin/rm -f "/etc/systemd/nspawn/$container_name.nspawn"
-          return 1
-        fi
-        sleep 1
-      done
-      log "Docker ready in $container_name (took ''${retries}s)"
-
-      # Get registration token
-      local reg_token=$(get_registration_token)
-
-      # Setup and run GitHub runner inside container
-      $NIXOS_CONTAINER run "$container_name" -- bash -c "
-        set -eo pipefail
-
-        source /etc/set-environment 2>/dev/null || true
-        export LD_LIBRARY_PATH=\"\''${NIX_LD_LIBRARY_PATH:-}:\''${LD_LIBRARY_PATH:-}\"
-
-        mkdir -p /home/github-runner/actions-runner
-        cd /home/github-runner/actions-runner
-
-        # Download latest runner (v2.330.0)
-        curl -sL -o actions-runner.tar.gz \
-          https://github.com/actions/runner/releases/download/v2.330.0/actions-runner-linux-x64-2.330.0.tar.gz
-        tar xzf actions-runner.tar.gz
-        rm actions-runner.tar.gz
-
-        chown -R github-runner:github-runner /home/github-runner/actions-runner
-
-        # Configure as github-runner user
-        sudo -E -u github-runner ./config.sh \
-          --url https://github.com/$GITHUB_REPO \
-          --token $reg_token \
-          --name $container_name \
-          --labels self-hosted,ci,nix,x64,Linux,ephemeral \
-          --work /var/lib/github-runner-work \
-          --ephemeral \
-          --unattended \
-          --disableupdate \
-          --replace
-
-        # Create empty gitconfig to avoid permission errors
-        touch /home/github-runner/.gitconfig
-        chown github-runner:github-runner /home/github-runner/.gitconfig
-
-        echo 'Starting GitHub Actions runner...'
-        # Run with proper HOME set
-        sudo -E -u github-runner HOME=/home/github-runner ./run.sh || true
-        echo 'Runner exited'
-      " &
-
-      # Store process info
-      local pid=$!
-      echo "$pid" > "$STATE_DIR/$container_name.pid"
+      # Store state info for monitoring
       echo "$(${pkgs.coreutils}/bin/date +%s)" > "$STATE_DIR/$container_name.started"
       echo "$job_id" > "$STATE_DIR/$container_name.jobid"
 
-      log "Container $container_name started (PID: $pid, job: $job_id)"
+      log "Container $container_name started (job: $job_id) - NixOS github-runner service will handle the rest"
     }
 
     # Deregister runner using GitHub API (more reliable than config.sh remove)
@@ -372,10 +451,14 @@ NSPAWN
       log "Cleaning up container $container_name"
 
       deregister_runner "$container_name"
+
+      # Stop the systemd service first to prevent restart loops
+      ${pkgs.systemd}/bin/systemctl stop "container@$container_name.service" 2>/dev/null || true
+
       $NIXOS_CONTAINER stop "$container_name" 2>/dev/null || true
       $NIXOS_CONTAINER destroy "$container_name" 2>/dev/null || true
       ${pkgs.coreutils}/bin/rm -f "/etc/systemd/nspawn/$container_name.nspawn"
-      ${pkgs.coreutils}/bin/rm -f "$STATE_DIR/$container_name.pid"
+      ${pkgs.coreutils}/bin/rm -f "$STATE_DIR/$container_name.token"
       ${pkgs.coreutils}/bin/rm -f "$STATE_DIR/$container_name.started"
       ${pkgs.coreutils}/bin/rm -f "$STATE_DIR/$container_name.jobid"
       ${pkgs.coreutils}/bin/rm -rf "/nix/var/nix/profiles/per-container/$container_name" 2>/dev/null || true
@@ -385,37 +468,63 @@ NSPAWN
       log "Container $container_name destroyed"
     }
 
+    # Check if github-runner service inside container has completed
+    is_runner_completed() {
+      local container_name=$1
+
+      # First check if container is still running
+      if ! $NIXOS_CONTAINER run "$container_name" -- true 2>/dev/null; then
+        return 0  # Container is not responding
+      fi
+
+      # Check the github-runner service
+      local status=$($NIXOS_CONTAINER run "$container_name" -- systemctl is-active github-runner.service 2>/dev/null || echo "unknown")
+      case "$status" in
+        active|activating|reloading)
+          return 1  # Runner is still active
+          ;;
+        failed)
+          return 0  # Runner failed
+          ;;
+        inactive)
+          # Check if the service ever ran by looking at its result
+          local result=$($NIXOS_CONTAINER run "$container_name" -- systemctl show github-runner.service --property=Result 2>/dev/null | cut -d= -f2)
+          if [ "$result" = "success" ] || [ "$result" = "exit-code" ]; then
+            return 0  # Service ran and exited
+          fi
+          return 1  # Service hasn't run yet
+          ;;
+        *)
+          return 1  # Unknown state, assume not completed
+          ;;
+      esac
+    }
+
     # Check for completed or timed-out containers
     check_containers() {
       for container in $(list_containers); do
-        local pid_file="$STATE_DIR/$container.pid"
         local started_file="$STATE_DIR/$container.started"
 
-        if [ -f "$pid_file" ]; then
-          local pid=$(cat "$pid_file")
+        # Check if runner service has completed (ephemeral job done)
+        if is_runner_completed "$container"; then
+          log "Container $container runner completed"
+          cleanup_container "$container"
+          continue
+        fi
 
-          # Check if runner process exited (job completed)
-          if ! kill -0 "$pid" 2>/dev/null; then
-            log "Container $container job completed"
+        # Check for timeout
+        if [ -f "$started_file" ]; then
+          local started=$(cat "$started_file")
+          local now=$(${pkgs.coreutils}/bin/date +%s)
+          local age=$((now - started))
+
+          if [ "$age" -gt "$JOB_TIMEOUT" ]; then
+            log "Container $container exceeded timeout (''${age}s), force killing"
             cleanup_container "$container"
-            continue
-          fi
-
-          # Check for timeout
-          if [ -f "$started_file" ]; then
-            local started=$(cat "$started_file")
-            local now=$(${pkgs.coreutils}/bin/date +%s)
-            local age=$((now - started))
-
-            if [ "$age" -gt "$JOB_TIMEOUT" ]; then
-              log "Container $container exceeded timeout (''${age}s), force killing"
-              kill "$pid" 2>/dev/null || true
-              cleanup_container "$container"
-            fi
           fi
         else
-          # Orphaned container without PID file
-          log "Orphaned container $container found"
+          # Orphaned container without started file
+          log "Orphaned container $container found (no started file)"
           cleanup_container "$container"
         fi
       done
@@ -435,12 +544,17 @@ NSPAWN
       local pending_runs=$(github_api "/repos/$GITHUB_REPO/actions/runs?status=pending&per_page=100")
       local pending_count=$(echo "$pending_runs" | ${pkgs.jq}/bin/jq -r '.total_count // 0')
 
-      log "Poll: queued=$queued_count, waiting=$waiting_count, pending=$pending_count"
+      # Also check in_progress runs - they may have queued jobs inside
+      local in_progress_runs=$(github_api "/repos/$GITHUB_REPO/actions/runs?status=in_progress&per_page=100")
+      local in_progress_count=$(echo "$in_progress_runs" | ${pkgs.jq}/bin/jq -r '.total_count // 0')
+
+      log "Poll: queued=$queued_count, waiting=$waiting_count, pending=$pending_count, in_progress=$in_progress_count"
 
       # Combine run IDs
       local run_ids=$(echo "$runs" | ${pkgs.jq}/bin/jq -r '.workflow_runs[]?.id // empty')
       run_ids="$run_ids $(echo "$waiting_runs" | ${pkgs.jq}/bin/jq -r '.workflow_runs[]?.id // empty')"
       run_ids="$run_ids $(echo "$pending_runs" | ${pkgs.jq}/bin/jq -r '.workflow_runs[]?.id // empty')"
+      run_ids="$run_ids $(echo "$in_progress_runs" | ${pkgs.jq}/bin/jq -r '.workflow_runs[]?.id // empty')"
 
       for run_id in $run_ids; do
         [ -z "$run_id" ] && continue
@@ -482,7 +596,7 @@ NSPAWN
 
           # Check if we already have a container for this job
           local container_name=$(job_id_to_container_name "$job_id")
-          if [ -f "$STATE_DIR/$container_name.pid" ]; then
+          if [ -f "$STATE_DIR/$container_name.started" ]; then
             log "    -> Skipping: container already exists"
             continue
           fi
@@ -505,17 +619,12 @@ NSPAWN
     reconcile_on_startup() {
       log "Reconciling state on startup..."
 
-      # Clean up any containers without corresponding active jobs
+      # Clean up any containers without active runner services
       for container in $(list_containers); do
-        local pid_file="$STATE_DIR/$container.pid"
-
-        # If PID file exists and process is running, leave it alone
-        if [ -f "$pid_file" ]; then
-          local pid=$(cat "$pid_file")
-          if kill -0 "$pid" 2>/dev/null; then
-            log "Container $container is still running (PID: $pid)"
-            continue
-          fi
+        # If runner service is still active, leave it alone
+        if ! is_runner_completed "$container"; then
+          log "Container $container has active runner service"
+          continue
         fi
 
         # Otherwise clean it up
@@ -523,13 +632,13 @@ NSPAWN
         cleanup_container "$container"
       done
 
-      # Clean up stale PID files (pattern: j*.pid)
-      for pid_file in "$STATE_DIR"/j*.pid; do
-        [ -f "$pid_file" ] || continue
-        local container=$(basename "$pid_file" .pid)
+      # Clean up stale token files (pattern: j*.token)
+      for token_file in "$STATE_DIR"/j*.token; do
+        [ -f "$token_file" ] || continue
+        local container=$(basename "$token_file" .token)
         if ! $NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q "^$container$"; then
-          log "Removing stale PID file for $container"
-          rm -f "$pid_file"
+          log "Removing stale token file for $container"
+          rm -f "$token_file"
           rm -f "$STATE_DIR/$container.started"
           rm -f "$STATE_DIR/$container.jobid"
         fi
@@ -655,16 +764,26 @@ NSPAWN
     GITHUB_REPO="${githubRepo}"
     STATE_DIR="/var/lib/job-listener"
 
-    get_removal_token() {
+    # Deregister runner via GitHub API
+    deregister_runner() {
+      local name=$1
       if [ -z "$GITHUB_TOKEN" ]; then
-        echo ""
         return
       fi
-      ${pkgs.curl}/bin/curl -s -X POST \
+
+      local runner_id=$(${pkgs.curl}/bin/curl -sf \
         -H "Authorization: token $GITHUB_TOKEN" \
         -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/$GITHUB_REPO/actions/runners/remove-token" \
-        | ${pkgs.jq}/bin/jq -r '.token // empty'
+        "https://api.github.com/repos/$GITHUB_REPO/actions/runners" \
+        | ${pkgs.jq}/bin/jq -r ".runners[] | select(.name == \"$name\") | .id")
+
+      if [ -n "$runner_id" ] && [ "$runner_id" != "null" ]; then
+        echo "  Deleting runner $name (ID: $runner_id) from GitHub..."
+        ${pkgs.curl}/bin/curl -sf -X DELETE \
+          -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          "https://api.github.com/repos/$GITHUB_REPO/actions/runners/$runner_id" || true
+      fi
     }
 
     echo "Stopping and destroying all job containers..."
@@ -672,24 +791,16 @@ NSPAWN
     for container in $($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep "^j[0-9]" || true); do
       echo "Cleaning up: $container"
 
-      removal_token=$(get_removal_token)
-      if [ -n "$removal_token" ]; then
-        echo "  Deregistering runner..."
-        $NIXOS_CONTAINER run "$container" -- bash -c "
-          cd /home/github-runner/actions-runner 2>/dev/null || exit 0
-          if [ -f .runner ]; then
-            ./config.sh remove --token '$removal_token' 2>/dev/null || true
-          fi
-        " 2>/dev/null || true
-      fi
+      deregister_runner "$container"
 
       $NIXOS_CONTAINER stop "$container" 2>/dev/null || true
       $NIXOS_CONTAINER destroy "$container" 2>/dev/null || true
       ${pkgs.coreutils}/bin/rm -f "/etc/systemd/nspawn/$container.nspawn"
+      ${pkgs.iproute2}/bin/ip link delete "ve-$container" 2>/dev/null || true
     done
 
     # Clean up state files
-    ${pkgs.coreutils}/bin/rm -f "$STATE_DIR"/j*.pid
+    ${pkgs.coreutils}/bin/rm -f "$STATE_DIR"/j*.token
     ${pkgs.coreutils}/bin/rm -f "$STATE_DIR"/j*.started
     ${pkgs.coreutils}/bin/rm -f "$STATE_DIR"/j*.jobid
 
@@ -821,6 +932,7 @@ in {
       gzip
       bash
       iproute2
+      systemd
     ];
 
     environment = {
