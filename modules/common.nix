@@ -11,5 +11,6 @@
 
   environment.systemPackages = [
     pkgs.sysstat
+    pkgs.jq
   ];
 }

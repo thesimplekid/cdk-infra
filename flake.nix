@@ -39,13 +39,13 @@
             agenix.nixosModules.default
 
             ./disk-config/hetzner-vps.nix
-            ./hosts/runner/github-runner-containerized.nix  # Using containerized runners
+            ./hosts/runner/job-listener.nix  # On-demand containers (ARC-style)
+            ./hosts/runner/container-resource-limits.nix
             ./hosts/runner/hardware-configuration-amd.nix
           ];
           specialArgs = {
             inherit inputs adminKeys;
             hostName = name;
-            # Runners are now defined in github-runner-containerized.nix as containers
           };
         };
     in
