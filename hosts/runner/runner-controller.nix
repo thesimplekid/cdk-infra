@@ -98,7 +98,7 @@ let
 
       nix.settings = {
         experimental-features = [ "nix-command" "flakes" ];
-        trusted-users = [ "github-runner" ];
+        trusted-users = [ "root" "github-runner" ];
       };
 
       # GitHub Actions Runner - using github-runner from nixpkgs
@@ -113,6 +113,7 @@ let
           bashInteractive coreutils curl gnutar gzip git docker nix jq findutils
           inetutils  # provides hostname
           github-runner
+          cachix
         ];
 
         environment = {
@@ -193,6 +194,9 @@ let
           LogsDirectory = "github-runner";
           RuntimeDirectory = "github-runner";
           KillSignal = "SIGINT";
+          # Required for cachix compatibility - stricter settings break cachix
+          PrivateTmp = false;
+          ProtectSystem = "full";
         };
       };
     }
@@ -375,6 +379,15 @@ in {
 
   users.users.root.openssh.authorizedKeys.keys = adminKeys;
 
+  # System user for container UID mapping (matches github-runner UID 1000 in containers)
+  # This allows the host's nix-daemon to trust container processes
+  users.groups.github-runner = { gid = 1000; };
+  users.users.github-runner = {
+    isSystemUser = true;
+    group = "github-runner";
+    uid = 1000;
+  };
+
   # User 'tsk' with sudo privileges
   users.users.tsk = {
     isNormalUser = true;
@@ -397,7 +410,8 @@ in {
     settings = {
       max-jobs = 2;
       auto-optimise-store = true;
-      trusted-users = [ "root" ];
+      # Trust github-runner user (UID 1000 in containers, mapped to host)
+      trusted-users = [ "root" "github-runner" ];
     };
     gc = {
       automatic = true;
