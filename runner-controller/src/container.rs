@@ -329,6 +329,10 @@ impl ContainerManager {
         let nspawn_config = PathBuf::from(format!("/etc/systemd/nspawn/{}.nspawn", name));
         let _ = std::fs::remove_file(&nspawn_config);
 
+        // Remove nspawn unix-export socket directory (prevents "Mount point exists already" error)
+        let unix_export = PathBuf::from(format!("/run/systemd/nspawn/unix-export/{}", name));
+        let _ = std::fs::remove_dir_all(&unix_export);
+
         // Remove container profiles
         let profile_dir = PathBuf::from(format!("/nix/var/nix/profiles/per-container/{}", name));
         let _ = std::fs::remove_dir_all(&profile_dir);

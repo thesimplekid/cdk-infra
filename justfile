@@ -53,3 +53,6 @@ storage HOST:
 # Show runner-01 storage
 storage-runner-01:
   just storage cdk-runner-01.cashudevkit.org
+# Copy GitHub runner token to a host and restart controller
+set-token SSH_HOST TOKEN:
+  echo "{{TOKEN}}" | ssh "{{SSH_HOST}}" 'mkdir -p /run/secrets/github-runner && cat > /run/secrets/github-runner/token && chmod 644 /run/secrets/github-runner/token && systemctl restart runner-controller'
