@@ -263,8 +263,8 @@ mod tests {
 
     #[test]
     fn test_slot_to_container_name() {
-        assert_eq!(ContainerManager::slot_to_container_name(0), "runner-r0");
-        assert_eq!(ContainerManager::slot_to_container_name(5), "runner-r5");
-        assert_eq!(ContainerManager::slot_to_container_name(42), "runner-r42");
+        assert_eq!(ContainerManager::slot_to_container_name(0), "c76067ea23-r0");
+        assert_eq!(ContainerManager::slot_to_container_name(5), "c76067ea23-r5");
+        assert_eq!(ContainerManager::slot_to_container_name(42), "c76067ea23-r42");
     }
 }
