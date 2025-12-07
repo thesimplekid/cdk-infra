@@ -152,7 +152,7 @@ impl ContainerManager {
             .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
             .unwrap_or_else(|_| "runner".to_string());
         let hash = Self::hash_string(&hostname);
-        let short_id = format!("{:x}", hash).chars().take(10).collect::<String>();
+        let short_id = format!("{:x}", hash).chars().take(5).collect::<String>();
 
         // Container names like "md5hash-r0"
         format!("{}-r{}", short_id, slot)
