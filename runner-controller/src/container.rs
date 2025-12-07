@@ -5,6 +5,9 @@ use std::process::Stdio;
 use anyhow::{Context, Result};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+
 
 const NSPAWN_CONFIG_TEMPLATE: &str = r#"[Exec]
 SystemCallFilter=add_key keyctl bpf
@@ -148,9 +151,16 @@ impl ContainerManager {
         let hostname = std::env::var("HOSTNAME")
             .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
             .unwrap_or_else(|_| "runner".to_string());
+        let hash = Self::hash_string(&hostname);
+        let short_id = format!("{:x}", hash).chars().take(10).collect::<String>();
 
-        // Container names like "cdk-runner-01-r0", "cdk-runner-02-r0"
-        format!("{}-r{}", hostname, slot)
+        // Container names like "md5hash-r0"
+        format!("{}-r{}", short_id, slot)
+    }
+    fn hash_string(s: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        s.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Write nspawn configuration for Docker support
