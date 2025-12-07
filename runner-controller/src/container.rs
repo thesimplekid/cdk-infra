@@ -145,7 +145,12 @@ impl ContainerManager {
 
     /// Convert pool slot index to container name (r + slot number)
     pub fn slot_to_container_name(slot: usize) -> String {
-        format!("r{}", slot)
+        let hostname = std::env::var("HOSTNAME")
+            .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+            .unwrap_or_else(|_| "runner".to_string());
+
+        // Container names like "cdk-runner-01-r0", "cdk-runner-02-r0"
+        format!("{}-r{}", hostname, slot)
     }
 
     /// Write nspawn configuration for Docker support
