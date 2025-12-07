@@ -1,6 +1,6 @@
 let
   # CDK Admin SSH public keys
-  admin1 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJiA6Oq79afOa48iyOVfs7iVbs3Ug9Elj8GdtWLs2UcD tsk@thesimplekid.com";
+  admin1 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA5JHd6Y0gX77Niuauv9SPxd1ZdrVsBSSIJdJZPpJVe8 root@nix-box";
 
   users = [
     admin1
