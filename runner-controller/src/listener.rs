@@ -167,10 +167,29 @@ impl PoolController {
                                 debug!(slot, name = %name, running_secs, "Container healthy");
                             }
                         } else {
-                            // Container exists but no state - orphaned, respawn
-                            warn!(slot, name = %name, "Orphaned container (no state), respawning");
-                            if let Err(e) = self.respawn_pool_container(&name, slot).await {
-                                warn!(slot, name = %name, error = %e, "Failed to respawn orphaned container");
+                            // Container exists but no state - orphaned
+                            // Check if runner completed before respawning
+                            match self.containers.is_runner_completed(&name).await {
+                                Ok(true) => {
+                                    warn!(slot, name = %name, "Orphaned container completed, respawning");
+                                    if let Err(e) = self.respawn_pool_container(&name, slot).await {
+                                        warn!(slot, name = %name, error = %e, "Failed to respawn orphaned container");
+                                    }
+                                }
+                                Ok(false) => {
+                                    // Runner still active, add back to state
+                                    warn!(slot, name = %name, "Orphaned container still active, recovering state");
+                                    let state = ContainerState::new(slot);
+                                    if let Err(e) = self.state_db.put_container(&name, &state) {
+                                        warn!(slot, name = %name, error = %e, "Failed to recover state for orphaned container");
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(slot, name = %name, error = %e, "Failed to check orphaned container status, respawning");
+                                    if let Err(e) = self.respawn_pool_container(&name, slot).await {
+                                        warn!(slot, name = %name, error = %e, "Failed to respawn orphaned container");
+                                    }
+                                }
                             }
                         }
                     }
@@ -263,8 +282,12 @@ mod tests {
 
     #[test]
     fn test_slot_to_container_name() {
-        assert_eq!(ContainerManager::slot_to_container_name(0), "c7606-r0");
-        assert_eq!(ContainerManager::slot_to_container_name(5), "c7606-r5");
-        assert_eq!(ContainerManager::slot_to_container_name(42), "c7606-r42");
+        // Set a test hostname
+        std::env::set_var("HOSTNAME", "test-host");
+        // Hash of "test-host" truncated to 8 chars
+        let expected_prefix = "aa098d39-r";
+        assert_eq!(ContainerManager::slot_to_container_name(0), format!("{}0", expected_prefix));
+        assert_eq!(ContainerManager::slot_to_container_name(5), format!("{}5", expected_prefix));
+        assert_eq!(ContainerManager::slot_to_container_name(42), format!("{}42", expected_prefix));
     }
 }
