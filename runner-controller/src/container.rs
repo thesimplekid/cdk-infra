@@ -86,7 +86,7 @@ impl ContainerManager {
         matches!(result, Ok(status) if status.success())
     }
 
-    /// List all pool containers (names starting with 'r' followed by digits)
+    /// List all pool containers ({prefix}-r{digits})
     pub async fn list(&self) -> Result<Vec<String>> {
         let output = self.run_container_cmd(&["list"]).await?;
 
@@ -94,16 +94,23 @@ impl ContainerManager {
             .lines()
             .map(|s| s.trim().to_string())
             .filter(|name| {
-                name.starts_with('r')
-                    && name.len() > 1
-                    && name[1..].chars().all(|c| c.is_ascii_digit())
+
+                // match {prefix}-r{digits}
+                if let Some((prefix, slot)) = name.split_once("-r") {
+                    return prefix.len() == 5
+                        && prefix.chars().all(|c| c.is_ascii_hexdigit())
+                        && !slot.is_empty()
+                        && slot.chars().all(|c| c.is_ascii_digit());
+                }
+
+                false
             })
             .collect();
 
         Ok(containers)
     }
 
-    /// List all runner containers (both old j* and new r* style for migration)
+    /// List all runner containers ({prefix}-r* style)
     pub async fn list_all(&self) -> Result<Vec<String>> {
         let output = self.run_container_cmd(&["list"]).await?;
 
@@ -111,9 +118,15 @@ impl ContainerManager {
             .lines()
             .map(|s| s.trim().to_string())
             .filter(|name| {
-                (name.starts_with('r') || name.starts_with('j'))
-                    && name.len() > 1
-                    && name[1..].chars().all(|c| c.is_ascii_digit())
+                // match {prefix}-r{digits}
+                if let Some((prefix, slot)) = name.split_once("-r") {
+                    return prefix.len() == 5
+                        && prefix.chars().all(|c| c.is_ascii_hexdigit())
+                        && !slot.is_empty()
+                        && slot.chars().all(|c| c.is_ascii_digit());
+                }
+
+                false
             })
             .collect();
 
