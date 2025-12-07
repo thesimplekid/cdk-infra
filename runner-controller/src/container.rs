@@ -1,12 +1,13 @@
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
+
 
 
 const NSPAWN_CONFIG_TEMPLATE: &str = r#"[Exec]
@@ -167,7 +168,7 @@ impl ContainerManager {
         let hash = Self::hash_string(&hostname);
         let short_id = format!("{:x}", hash).chars().take(5).collect::<String>();
 
-        // Container names like "md5hash-r0"
+        // Container names like "hash-r0"
         format!("{}-r{}", short_id, slot)
     }
     fn hash_string(s: &str) -> u64 {
