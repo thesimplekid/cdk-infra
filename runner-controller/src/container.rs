@@ -1,10 +1,14 @@
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
+
+
 
 const NSPAWN_CONFIG_TEMPLATE: &str = r#"[Exec]
 SystemCallFilter=add_key keyctl bpf
@@ -83,7 +87,7 @@ impl ContainerManager {
         matches!(result, Ok(status) if status.success())
     }
 
-    /// List all pool containers (names starting with 'r' followed by digits)
+    /// List all pool containers ({prefix}-r{digits})
     pub async fn list(&self) -> Result<Vec<String>> {
         let output = self.run_container_cmd(&["list"]).await?;
 
@@ -91,16 +95,23 @@ impl ContainerManager {
             .lines()
             .map(|s| s.trim().to_string())
             .filter(|name| {
-                name.starts_with('r')
-                    && name.len() > 1
-                    && name[1..].chars().all(|c| c.is_ascii_digit())
+
+                // match {prefix}-r{digits}
+                if let Some((prefix, slot)) = name.split_once("-r") {
+                    return prefix.len() == 5
+                        && prefix.chars().all(|c| c.is_ascii_hexdigit())
+                        && !slot.is_empty()
+                        && slot.chars().all(|c| c.is_ascii_digit());
+                }
+
+                false
             })
             .collect();
 
         Ok(containers)
     }
 
-    /// List all runner containers (both old j* and new r* style for migration)
+    /// List all runner containers ({prefix}-r* style)
     pub async fn list_all(&self) -> Result<Vec<String>> {
         let output = self.run_container_cmd(&["list"]).await?;
 
@@ -108,9 +119,15 @@ impl ContainerManager {
             .lines()
             .map(|s| s.trim().to_string())
             .filter(|name| {
-                (name.starts_with('r') || name.starts_with('j'))
-                    && name.len() > 1
-                    && name[1..].chars().all(|c| c.is_ascii_digit())
+                // match {prefix}-r{digits}
+                if let Some((prefix, slot)) = name.split_once("-r") {
+                    return prefix.len() == 5
+                        && prefix.chars().all(|c| c.is_ascii_hexdigit())
+                        && !slot.is_empty()
+                        && slot.chars().all(|c| c.is_ascii_digit());
+                }
+
+                false
             })
             .collect();
 
@@ -145,7 +162,19 @@ impl ContainerManager {
 
     /// Convert pool slot index to container name (r + slot number)
     pub fn slot_to_container_name(slot: usize) -> String {
-        format!("r{}", slot)
+        let hostname = std::env::var("HOSTNAME")
+            .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+            .unwrap_or_else(|_| "runner".to_string());
+        let hash = Self::hash_string(&hostname);
+        let short_id = format!("{:x}", hash).chars().take(5).collect::<String>();
+
+        // Container names like "hash-r0"
+        format!("{}-r{}", short_id, slot)
+    }
+    fn hash_string(s: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        s.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Write nspawn configuration for Docker support
@@ -313,6 +342,10 @@ impl ContainerManager {
         // Remove nspawn config
         let nspawn_config = PathBuf::from(format!("/etc/systemd/nspawn/{}.nspawn", name));
         let _ = std::fs::remove_file(&nspawn_config);
+
+        // Remove nspawn unix-export socket directory (prevents "Mount point exists already" error)
+        let unix_export = PathBuf::from(format!("/run/systemd/nspawn/unix-export/{}", name));
+        let _ = std::fs::remove_dir_all(&unix_export);
 
         // Remove container profiles
         let profile_dir = PathBuf::from(format!("/nix/var/nix/profiles/per-container/{}", name));

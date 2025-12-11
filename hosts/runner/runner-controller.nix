@@ -227,13 +227,13 @@ let
     echo "Poll interval: ${toString pollIntervalSeconds}s"
     echo ""
 
-    count=$($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -cE '^r[0-9]' 2>/dev/null) || count=0
+    count=$($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -cE '^[a-f0-9]+-r[0-9]+$' 2>/dev/null) || count=0
     echo "Active pool containers: $count/${toString maxConcurrentJobs}"
     echo ""
 
     if [ "$count" -gt 0 ]; then
       echo "Pool slots:"
-      for container in $($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -E "^r[0-9]" || true); do
+      for container in $($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -E "^[a-f0-9]+-r[0-9]+$" || true); do
         echo "  $container"
       done
       echo ""
@@ -264,8 +264,8 @@ let
       -H "Accept: application/vnd.github.v3+json" \
       "https://api.github.com/repos/$GITHUB_REPO/actions/runners?per_page=100")
 
-    # Match both old j* and new r* container names
-    active_containers=$($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -E "^[jr][0-9]" || echo "")
+    # Match new hash-prefixed container names
+    active_containers=$($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -E "^[a-f0-9]+-r[0-9]+$" || echo "")
 
     echo "$runners" | ${pkgs.jq}/bin/jq -r '.runners[] | select(.status == "offline") | "\(.id) \(.name)"' | while read -r id name; do
       if echo "$active_containers" | ${pkgs.gnugrep}/bin/grep -q "^$name$"; then
@@ -322,8 +322,8 @@ let
 
     echo "Stopping and destroying all runner containers..."
 
-    # Match both old j* and new r* container names
-    for container in $($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -E "^[jr][0-9]" || true); do
+    # Match new hash-prefixed container names
+    for container in $($NIXOS_CONTAINER list 2>/dev/null | ${pkgs.gnugrep}/bin/grep -E "^[a-f0-9]+-r[0-9]+$" || true); do
       echo "Cleaning up: $container"
 
       deregister_runner "$container"
@@ -334,8 +334,8 @@ let
       ${pkgs.iproute2}/bin/ip link delete "ve-$container" 2>/dev/null || true
     done
 
-    # Clean up all state files (both old j* and new r* patterns)
-    ${pkgs.coreutils}/bin/rm -f "$STATE_DIR"/j*.* "$STATE_DIR"/r*.*
+    # Clean up state files for hash-prefixed names
+    ${pkgs.coreutils}/bin/rm -f "$STATE_DIR"/*-r*.*
 
     echo "Cleanup complete"
   '';
