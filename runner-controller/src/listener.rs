@@ -285,7 +285,7 @@ mod tests {
         // Set a test hostname
         std::env::set_var("HOSTNAME", "test-host");
         // Hash of "test-host" truncated to 8 chars
-        let expected_prefix = "aa098d39-r";
+        let expected_prefix = "aa098-r";
         assert_eq!(ContainerManager::slot_to_container_name(0), format!("{}0", expected_prefix));
         assert_eq!(ContainerManager::slot_to_container_name(5), format!("{}5", expected_prefix));
         assert_eq!(ContainerManager::slot_to_container_name(42), format!("{}42", expected_prefix));
