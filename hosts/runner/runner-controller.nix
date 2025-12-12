@@ -5,8 +5,8 @@
 
 let
   # Configuration
-  githubRepo = "thesimplekid/cdk";
-  maxConcurrentJobs = 4;
+  githubRepo = "cashubtc/cdk";
+  maxConcurrentJobs = 7;
   pollIntervalSeconds = 10;
   jobTimeoutSeconds = 7200;  # 2 hours
 
