@@ -99,6 +99,14 @@ let
       nix.settings = {
         experimental-features = [ "nix-command" "flakes" ];
         trusted-users = [ "root" "github-runner" ];
+        substituters = [
+          "https://cache.nixos.org"
+          "https://cashudevkit.cachix.org"
+        ];
+        trusted-public-keys = [
+          "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+          "cashudevkit.cachix.org-1:zFKdvMiTllKWxIFNTjXgisZsOFufmaZXjWJNcmc8r+4="
+        ];
       };
 
       # GitHub Actions Runner - using github-runner from nixpkgs

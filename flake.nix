@@ -17,6 +17,8 @@
 
       adminKeys = [
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA5JHd6Y0gX77Niuauv9SPxd1ZdrVsBSSIJdJZPpJVe8 root@nix-box"
+        # TSK
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJiA6Oq79afOa48iyOVfs7iVbs3Ug9Elj8GdtWLs2UcD tsk@thesimplekid.com"
       ];
 
       # Rust runner controller package
@@ -108,8 +110,5 @@
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
         };
-
-
-
     };
 }
