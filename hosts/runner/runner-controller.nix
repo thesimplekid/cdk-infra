@@ -5,7 +5,7 @@
 
 let
   # Configuration
-  githubRepo = "asmogo/cdk";
+  githubRepo = "cashubtc/cdk";
   maxConcurrentJobs = 7;
   pollIntervalSeconds = 10;
   jobTimeoutSeconds = 7200;  # 2 hours
