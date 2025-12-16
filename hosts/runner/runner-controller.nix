@@ -399,6 +399,7 @@ in {
   # User 'tsk' with sudo privileges
   users.users.tsk = {
     isNormalUser = true;
+    uid = 1001;
     createHome = true;
     home = "/home/tsk";
     shell = pkgs.fish;
