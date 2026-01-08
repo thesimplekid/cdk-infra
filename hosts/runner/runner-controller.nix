@@ -1,7 +1,7 @@
 # On-Demand GitHub Actions Runner Controller
 # Implements ARC-style job detection with NixOS containers
 # See docs/runner-controller.md for documentation
-{ config, pkgs, lib, hostName, adminKeys, inputs, runnerController, ... }:
+{ config, pkgs, lib, hostName, adminKeys, inputs, runnerController, extraLabels ? [], ... }:
 
 let
   # Configuration
@@ -11,7 +11,7 @@ let
   jobTimeoutSeconds = 7200;  # 2 hours
 
   # Labels this runner provides (jobs must request a subset of these)
-  runnerLabels = [ "self-hosted" "ci" "nix" "x64" "Linux" ];
+  runnerLabels = [ "self-hosted" "ci" "nix" "x64" "Linux" ] ++ extraLabels;
 
   # Container template - written to /etc/nixos/ci-container-template.nix
   # Uses github-runner from nixpkgs (Runner.Listener binary)
@@ -176,7 +176,7 @@ let
             --disableupdate \
             --work "$WORK_DIR" \
             --url "https://github.com/$GITHUB_REPO" \
-            --labels "self-hosted,ci,nix,x64,Linux" \
+            --labels "${lib.concatStringsSep "," runnerLabels}" \
             --name "$RUNNER_NAME" \
             --replace \
             --ephemeral \

@@ -49,7 +49,7 @@
         };
       };
 
-      makeRunnerVps = name:
+      makeRunnerVps = name: extraLabels:
         nixpkgs.lib.nixosSystem {
           inherit system;
           modules = [
@@ -65,7 +65,7 @@
             ./hosts/runner/hardware-configuration-amd.nix
           ];
           specialArgs = {
-            inherit inputs adminKeys runnerController;
+            inherit inputs adminKeys runnerController extraLabels;
             hostName = name;
           };
         };
@@ -78,8 +78,8 @@
       };
 
       nixosConfigurations = {
-        cdk-runner-01 = makeRunnerVps "cdk-runner-01";
-        cdk-runner-02 = makeRunnerVps "cdk-runner-02";
+        cdk-runner-01 = makeRunnerVps "cdk-runner-01" [ "fuzz-a" ];
+        cdk-runner-02 = makeRunnerVps "cdk-runner-02" [ "fuzz-b" ];
       };
 
       devShells.x86_64-linux.default =
