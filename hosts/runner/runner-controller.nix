@@ -72,7 +72,7 @@ let
       ];
 
       environment.systemPackages = with pkgs; [
-        git just cachix curl jq xz gnupg gawk vim htop lsof netcat procps
+        git gh just cachix curl jq xz gnupg gawk vim htop lsof netcat procps
         gnutar gzip
         icu openssl zlib
         stdenv.cc.cc.lib
