@@ -423,12 +423,6 @@ in {
       # Trust github-runner user (UID 1000 in containers, mapped to host)
       trusted-users = [ "root" "github-runner" ];
     };
-    gc = {
-      automatic = true;
-      persistent = true;
-      dates = "monthly";
-      options = "--delete-older-than 7d";
-    };
   };
 
   services.journald.extraConfig = "SystemMaxUse=1G";

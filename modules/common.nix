@@ -1,36 +1,19 @@
 { pkgs, ... }:
 
 let
-  gcNix = "gc-nix-store";
   cleanupDocker = "cleanup-docker";
 in
 {
+  nix.gc = {
+    automatic = true;
+    persistent = true;
+    dates = "daily";
+    options = "--delete-older-than 7d";
+  };
+
   services.sysstat = {
     enable = true;
     collect-frequency = "*:00/1";
-  };
-
-  systemd.services.${gcNix} =
-    let
-      script = pkgs.writeShellScript "gc-nix-store" ''
-        ${pkgs.nix}/bin/nix-collect-garbage -d --delete-older-than 7d
-      '';
-    in
-    {
-      description = "GC the /nix store";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = script;
-        User = "root";
-      };
-    };
-
-  systemd.timers.${gcNix} = {
-    description = "Timer for gc the /nix store";
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "daily";
-    };
   };
 
   systemd.services.${cleanupDocker} =
