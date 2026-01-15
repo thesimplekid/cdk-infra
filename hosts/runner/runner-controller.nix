@@ -122,6 +122,7 @@ let
           inetutils  # provides hostname
           github-runner
           cachix
+          gh
         ];
 
         environment = {
@@ -426,7 +427,7 @@ in {
       automatic = true;
       persistent = true;
       dates = "monthly";
-      options = "--delete-older-than 30d";
+      options = "--delete-older-than 7d";
     };
   };
 
