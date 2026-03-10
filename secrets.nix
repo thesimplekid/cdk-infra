@@ -12,11 +12,20 @@ let
   # After bootstrapping, run: ssh root@SERVER cat /etc/ssh/ssh_host_ed25519_key.pub
   cdk-runner-01 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPHlPwGbh8WFCHWMnjn5KXY7nwlpBN1kT6CkT/eHZoVi root@cdk-runner-01";
   cdk-runner-02 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJlwEpIsB/l+ZMqZjHK5Hha02Mk3wKhBh6wLa78TNiHK root@cdk-runner-02";
+  cdk-mint-01= "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJd+QUGdGhZFjFi6TK5Mhi7e5rKGANBGJRokC7sDwx2Q root@cdk-mint-01";
   runners = [
     cdk-runner-01
     cdk-runner-02
   ];
+
+  # Mint server host keys (add after bootstrap)
+  # After bootstrapping, run: ssh root@SERVER cat /etc/ssh/ssh_host_ed25519_key.pub
+  # cdk-mint-01 = "ssh-ed25519 PLACEHOLDER root@cdk-mint-01";
+  mints = [
+    cdk-mint-01
+  ];
 in
 {
   "secrets/github-runner.age".publicKeys = runners ++ users;
+  "secrets/cdk-mintd-mnemonic.age".publicKeys = mints ++ users;
 }

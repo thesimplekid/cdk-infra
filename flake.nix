@@ -8,9 +8,13 @@
     };
 
     agenix.url = "github:ryantm/agenix";
+
+    cdk = {
+      url = "github:cashubtc/cdk";
+    };
   };
 
-  outputs = { nixpkgs, disko, agenix, ... }@inputs:
+  outputs = { nixpkgs, disko, agenix, cdk, ... }@inputs:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -49,6 +53,27 @@
         };
       };
 
+      makeMintVps = name:
+        nixpkgs.lib.nixosSystem {
+          inherit system;
+          modules = [
+            topLevelModule
+            ./modules/nixos-nixpkgs-last-modified.nix
+
+            disko.nixosModules.disko
+            agenix.nixosModules.default
+
+            ./disk-config/bios-vps.nix
+            ./hosts/mint/cdk-mint.nix
+            ./hosts/mint/hardware-configuration.nix
+          ];
+          specialArgs = {
+            inherit inputs adminKeys;
+            hostName = name;
+            cdkMintd = cdk.packages.${system}.cdk-mintd-static;
+          };
+        };
+
       makeRunnerVps = name: extraLabels:
         nixpkgs.lib.nixosSystem {
           inherit system;
@@ -80,6 +105,8 @@
       nixosConfigurations = {
         cdk-runner-01 = makeRunnerVps "cdk-runner-01" [ "fuzz-a" ];
         cdk-runner-02 = makeRunnerVps "cdk-runner-02" [ "fuzz-b" ];
+
+        cdk-mint-01 = makeMintVps "cdk-mint-01";
       };
 
       devShells.x86_64-linux.default =
