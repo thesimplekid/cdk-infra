@@ -109,12 +109,56 @@ let
         ];
       };
 
+      # Configure Nix with GitHub access token to avoid API rate limits
+      # (unauthenticated: 60 req/hr, authenticated: 5000 req/hr)
+      # Writes extra-access-tokens to /etc/nix/nix.conf and restarts nix-daemon
+      # so both daemon and client pick up the token before CI jobs run.
+      systemd.services.nix-github-token = {
+        description = "Configure Nix GitHub access token";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "nix-daemon.service" ];
+        before = [ "github-runner.service" ];
+
+        path = with pkgs; [ coreutils systemd ];
+
+        script = '''
+          set -euo pipefail
+          TOKEN_FILE="/run/secrets/github-runner/token"
+
+          for i in $(seq 1 30); do
+            if [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
+              break
+            fi
+            echo "Waiting for GitHub PAT... attempt $i"
+            sleep 1
+          done
+
+          if [ ! -f "$TOKEN_FILE" ] || [ ! -s "$TOKEN_FILE" ]; then
+            echo "WARNING: GitHub PAT not found, Nix will use unauthenticated API requests"
+            exit 0
+          fi
+
+          GITHUB_PAT=$(cat "$TOKEN_FILE")
+          echo "extra-access-tokens = github.com=$GITHUB_PAT" >> /etc/nix/nix.conf
+          echo "Configured Nix GitHub access token"
+
+          # Restart nix-daemon so it picks up the new config
+          systemctl restart nix-daemon.service || true
+          echo "Restarted nix-daemon with GitHub access token"
+        ''';
+
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+      };
+
       # GitHub Actions Runner - using github-runner from nixpkgs
       # This is designed for ephemeral containers with dynamic registration tokens
       systemd.services.github-runner = {
         description = "GitHub Actions Runner";
         wantedBy = [ "multi-user.target" ];
-        after = [ "network-online.target" "docker.service" ];
+        after = [ "network-online.target" "docker.service" "nix-github-token.service" ];
         wants = [ "network-online.target" ];
 
         path = with pkgs; [
@@ -416,6 +460,7 @@ in {
   nix = {
     extraOptions = ''
       experimental-features = nix-command flakes
+      !include /run/secrets/nix-access-tokens
     '';
     settings = {
       max-jobs = 2;
@@ -462,6 +507,47 @@ in {
       iptables -I FORWARD -i ve-+ -j ACCEPT
       iptables -I FORWARD -o ve-+ -j ACCEPT
     '';
+  };
+
+  # Generate Nix access-tokens file from GitHub PAT
+  # This allows Nix to make authenticated GitHub API requests (5000/hr vs 60/hr)
+  # when fetching flake inputs, avoiding rate limit errors.
+  systemd.services.nix-access-tokens = {
+    description = "Generate Nix GitHub access-tokens from runner PAT";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "agenix.service" ];
+    before = [ "runner-controller.service" ];
+
+    path = [ pkgs.coreutils ];
+
+    script = ''
+      set -euo pipefail
+      TOKEN_FILE="/run/secrets/github-runner/token"
+
+      # Wait for the token to be available
+      for i in $(seq 1 30); do
+        if [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
+          break
+        fi
+        echo "Waiting for GitHub token... attempt $i"
+        sleep 1
+      done
+
+      if [ ! -f "$TOKEN_FILE" ] || [ ! -s "$TOKEN_FILE" ]; then
+        echo "ERROR: Token file not found or empty: $TOKEN_FILE"
+        exit 1
+      fi
+
+      GITHUB_TOKEN=$(cat "$TOKEN_FILE")
+      echo "access-tokens = github.com=$GITHUB_TOKEN" > /run/secrets/nix-access-tokens
+      chmod 0644 /run/secrets/nix-access-tokens
+      echo "Nix access-tokens file generated successfully"
+    '';
+
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
   };
 
   # Rust runner-controller service
