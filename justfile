@@ -4,6 +4,10 @@ runner_01_host := "cdk-runner-01.cashudevkit.org"
 runner_02_ip := "91.99.191.146"
 runner_02_host := "cdk-runner-02.cashudevkit.org"
 
+# Mint IPs/hostnames
+mint_01_ip := "80.71.235.189"
+mint_01_host := "testnut.cashudevkit.org"
+
 default:
   @just --list
 
@@ -84,6 +88,24 @@ storage-runner-02:
 # Set token for runner-02
 set-token-runner-02 TOKEN:
   just set-token "root@{{runner_02_host}}" "{{TOKEN}}"
+
+# ============ Mint 01 Commands ============
+
+# Apply to cdk-mint-01
+apply-mint-01:
+  just apply cdk-mint-01 "root@{{mint_01_ip}}"
+
+# Bootstrap cdk-mint-01
+bootstrap-mint-01 IP=mint_01_ip:
+  just bootstrap cdk-mint-01 "root@{{IP}}"
+
+# Build mint-01 config
+build-mint-01:
+  just build cdk-mint-01
+
+# Show mint-01 service status
+status-mint-01:
+  ssh root@{{mint_01_host}} systemctl status cdk-mintd postgresql caddy
 
 # ============ All Runners Commands ============
 
