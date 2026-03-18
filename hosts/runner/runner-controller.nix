@@ -596,11 +596,70 @@ in {
     };
   };
 
+  # ============================================================
+  # Podman - Rootless container runtime for Forgejo Actions
+  # ============================================================
+  virtualisation.podman = {
+    enable = true;
+    dockerCompat = true;  # Provides 'docker' CLI alias for act_runner compatibility
+  };
+
+  # ============================================================
+  # Forgejo Actions Runner
+  # ============================================================
+  services.gitea-actions-runner = {
+    package = pkgs.forgejo-runner;
+    instances.forgejo = {
+      enable = true;
+      name = hostName;
+      url = "https://forgejo.cashudevkit.org";
+      tokenFile = config.age.secrets.forgejo-runner-token.path;
+      labels = [
+        "docker:docker://node:22-bookworm"
+        "ubuntu-latest:docker://node:22-bookworm"
+        "nix:host"
+      ];
+      hostPackages = with pkgs; [
+        bash
+        coreutils
+        curl
+        gawk
+        gitMinimal
+        gnused
+        nodejs
+        wget
+        nix
+        jq
+        gnutar
+        gzip
+      ];
+      settings = {
+        runner = {
+          capacity = 2;
+          timeout = "3h";
+        };
+        cache = {
+          enabled = true;
+        };
+        container = {
+          network = "bridge";
+          privileged = false;
+        };
+      };
+    };
+  };
+
   # Secrets
   age.secrets.github-runner-token = {
     file = ../../secrets/github-runner.age;
     path = "/run/secrets/github-runner/token";
     mode = "0644";
     owner = "root";
+  };
+
+  age.secrets.forgejo-runner-token = {
+    file = ../../secrets/forgejo-runner-token.age;
+    path = "/run/secrets/forgejo-runner/token";
+    mode = "0400";
   };
 }

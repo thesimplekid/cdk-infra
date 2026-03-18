@@ -8,6 +8,11 @@ let
   mintListenHost = "127.0.0.1";
   mintListenPort = 8085;
 
+  # Forgejo configuration
+  forgejoDomain = "forgejo.cashudevkit.org";
+  forgejoListenHost = "127.0.0.1";
+  forgejoListenPort = 3000;
+
   # cdk-mintd config template. The mnemonic is injected at runtime from agenix
   # so it never ends up in the Nix store.
   mintConfigTemplate = pkgs.writeText "cdk-mintd-config.toml.tpl" ''
@@ -185,6 +190,41 @@ in {
       extraConfig = ''
         reverse_proxy ${mintListenHost}:${toString mintListenPort}
       '';
+    };
+    virtualHosts."${forgejoDomain}" = {
+      extraConfig = ''
+        reverse_proxy ${forgejoListenHost}:${toString forgejoListenPort}
+      '';
+    };
+  };
+
+  # ============================================================
+  # Forgejo - Self-hosted Git forge
+  # ============================================================
+  services.forgejo = {
+    enable = true;
+    package = pkgs.forgejo;
+    stateDir = "/var/lib/forgejo";
+    settings = {
+      server = {
+        DOMAIN = forgejoDomain;
+        ROOT_URL = "https://${forgejoDomain}/";
+        HTTP_ADDR = forgejoListenHost;
+        HTTP_PORT = forgejoListenPort;
+        DISABLE_SSH = true;
+      };
+      service = {
+        DISABLE_REGISTRATION = false;
+      };
+      actions = {
+        ENABLED = true;
+      };
+      mailer = {
+        ENABLED = false;
+      };
+      session = {
+        COOKIE_SECURE = true;
+      };
     };
   };
 

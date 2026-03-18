@@ -28,4 +28,5 @@ in
 {
   "secrets/github-runner.age".publicKeys = runners ++ users;
   "secrets/cdk-mintd-mnemonic.age".publicKeys = mints ++ users;
+  "secrets/forgejo-runner-token.age".publicKeys = runners ++ users;
 }
