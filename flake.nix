@@ -71,6 +71,7 @@
             inherit inputs adminKeys;
             hostName = name;
             cdkMintd = cdk.packages.${system}.cdk-mintd-static;
+            cdkMintdLdk = cdk.packages.${system}.cdk-mintd-ldk-static;
           };
         };
 

@@ -1,12 +1,31 @@
 # CDK Mint Server Configuration
 # Runs cdk-mintd with PostgreSQL backend, fronted by Caddy for automatic HTTPS
-{ config, pkgs, lib, hostName, adminKeys, inputs, cdkMintd, ... }:
+{ config, pkgs, lib, hostName, adminKeys, inputs, cdkMintd, cdkMintdLdk, ... }:
 
 let
   # Mint configuration
   mintDomain = "testnut.cashudevkit.org";
   mintListenHost = "127.0.0.1";
   mintListenPort = 8085;
+
+  # Mutinynet mint configuration
+  mint2Domain = "mutiny.cashudevkit.org";
+  mint2ListenHost = "127.0.0.1";
+  mint2ListenPort = 8086;
+
+  # Mutinynet LDK dashboard configuration
+  dashDomain = "dash.mutiny.cashudevkit.org";
+  dashUpstreamPort = 8091;
+
+  # Caddy snippet template for dash basic auth - hash injected at runtime
+  dashCaddyTemplate = pkgs.writeText "caddy-dash.tpl" ''
+    ${dashDomain} {
+      basic_auth {
+        admin @BCRYPT_HASH@
+      }
+      reverse_proxy 127.0.0.1:${toString dashUpstreamPort}
+    }
+  '';
 
   # Forgejo configuration
   forgejoDomain = "forgejo.cashudevkit.org";
@@ -69,6 +88,68 @@ let
   # We create a wrapper that finds and runs it
   cdkMintdBin = pkgs.writeShellScriptBin "cdk-mintd" ''
     exec $(find ${cdkMintd}/bin -type f -name 'cdk-mintd*' | head -1) "$@"
+  '';
+
+  # Mutinynet mint config template (LDK node backend on signet/mutinynet)
+  mint2ConfigTemplate = pkgs.writeText "cdk-mintd-mutiny-config.toml.tpl" ''
+    [info]
+    url = "https://${mint2Domain}/"
+    listen_host = "${mint2ListenHost}"
+    listen_port = ${toString mint2ListenPort}
+    mnemonic = "@MINT_MNEMONIC@"
+
+    [info.quote_ttl]
+    mint_ttl = 600
+    melt_ttl = 120
+
+    [info.http_cache]
+    backend = "memory"
+    ttl = 60
+    tti = 60
+
+    [mint_management_rpc]
+    enabled = false
+
+    [mint_info]
+    name = "cdk mutinynet mint"
+    description = "A CDK mint on Mutinynet for testing"
+    description_long = "This mint runs on Mutinynet (signet) using an integrated LDK node. Not real sats."
+    motd = "Mutinynet testing mint"
+    contact_email = "tsk@thesimplekid.com"
+
+    [database]
+    engine = "sqlite"
+
+    [database.sqlite]
+    path = "/var/lib/cdk-mintd-mutiny/cdk-mintd.sqlite"
+
+    [ln]
+    ln_backend = "ldknode"
+
+    [ldk_node]
+    fee_percent = 0.02
+    reserve_fee_min = 2
+    bitcoin_network = "signet"
+    chain_source_type = "esplora"
+    ldk_node_mnemonic = "@MINT_MNEMONIC@"
+    esplora_url = "https://mutinynet.com/api"
+    gossip_source_type = "rgs"
+    rgs_url = "https://rgs.mutinynet.com/snapshot/0"
+    storage_dir_path = "/var/lib/cdk-mintd-mutiny/ldk-node"
+    log_dir_path = "/var/lib/cdk-mintd-mutiny/ldk-node/ldk_node.log"
+
+    ldk_node_host = "0.0.0.0"
+    ldk_node_port = 9735
+
+
+    [limits]
+    max_inputs = 1000
+    max_outputs = 1000
+  '';
+
+  # The cdk-mintd LDK binary from the static package
+  cdkMintdLdkBin = pkgs.writeShellScriptBin "cdk-mintd-ldk" ''
+    exec $(find ${cdkMintdLdk}/bin -type f -name 'cdk-mintd*' | head -1) "$@"
   '';
 
 in {
@@ -136,7 +217,7 @@ in {
     firewall = {
       enable = true;
       allowPing = true;
-      allowedTCPPorts = [ 22 80 443 ];
+      allowedTCPPorts = [ 22 80 443 9735 ];
     };
   };
 
@@ -186,9 +267,18 @@ in {
   # ============================================================
   services.caddy = {
     enable = true;
+    # Import the runtime-generated dash config (with basic auth secret)
+    extraConfig = ''
+      import /var/lib/caddy/dash.caddy
+    '';
     virtualHosts."${mintDomain}" = {
       extraConfig = ''
         reverse_proxy ${mintListenHost}:${toString mintListenPort}
+      '';
+    };
+    virtualHosts."${mint2Domain}" = {
+      extraConfig = ''
+        reverse_proxy ${mint2ListenHost}:${toString mint2ListenPort}
       '';
     };
     virtualHosts."${forgejoDomain}" = {
@@ -196,6 +286,16 @@ in {
         reverse_proxy ${forgejoListenHost}:${toString forgejoListenPort}
       '';
     };
+  };
+
+  # Inject the bcrypt hash into the dash Caddyfile snippet before Caddy starts
+  systemd.services.caddy = {
+    after = [ "agenix.service" ];
+    preStart = ''
+      hash=$(tr -d '\n' < /run/secrets/caddy/dash-basicauth-hash)
+      install -m 0400 -o caddy -g caddy ${dashCaddyTemplate} /var/lib/caddy/dash.caddy
+      ${pkgs.gnused}/bin/sed -i "s|@BCRYPT_HASH@|$hash|" /var/lib/caddy/dash.caddy
+    '';
   };
 
   # ============================================================
@@ -249,6 +349,15 @@ in {
     mode = "0400";
   };
 
+  # Bcrypt hash for dash.mutiny basic auth (generate with: caddy hash-password)
+  age.secrets.dash-basicauth-hash = {
+    file = ../../secrets/dash-basicauth-hash.age;
+    path = "/run/secrets/caddy/dash-basicauth-hash";
+    owner = "caddy";
+    group = "caddy";
+    mode = "0400";
+  };
+
   systemd.services.cdk-mintd = {
     description = "CDK Mint Daemon";
     wantedBy = [ "multi-user.target" ];
@@ -266,6 +375,7 @@ in {
       Type = "simple";
       User = "cdk-mintd";
       Group = "cdk-mintd";
+      Environment = "RUST_LOG=debug";
       ExecStart = "${cdkMintdBin}/bin/cdk-mintd --config /var/lib/cdk-mintd/runtime/config.toml";
       Restart = "always";
       RestartSec = "5s";
@@ -279,6 +389,62 @@ in {
       ProtectHome = true;
       PrivateTmp = true;
       ReadWritePaths = [ "/var/lib/cdk-mintd" ];
+    };
+  };
+
+  # ============================================================
+  # cdk-mintd-mutiny service (Mutinynet LDK node)
+  # ============================================================
+
+  # System user for cdk-mintd-mutiny
+  users.groups.cdk-mintd-mutiny = {};
+  users.users.cdk-mintd-mutiny = {
+    isSystemUser = true;
+    group = "cdk-mintd-mutiny";
+    home = "/var/lib/cdk-mintd-mutiny";
+    createHome = true;
+  };
+
+  age.secrets.cdk-mintd-mutiny-mnemonic = {
+    file = ../../secrets/cdk-mintd-mutiny-mnemonic.age;
+    path = "/run/secrets/cdk-mintd-mutiny/mnemonic";
+    owner = "cdk-mintd-mutiny";
+    group = "cdk-mintd-mutiny";
+    mode = "0400";
+  };
+
+  systemd.services.cdk-mintd-mutiny = {
+    description = "CDK Mint Daemon (Mutinynet LDK)";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network-online.target" "agenix.service" ];
+    wants = [ "network-online.target" ];
+
+    preStart = ''
+      install -d -m 0750 -o cdk-mintd-mutiny -g cdk-mintd-mutiny /var/lib/cdk-mintd-mutiny/runtime
+      install -d -m 0750 -o cdk-mintd-mutiny -g cdk-mintd-mutiny /var/lib/cdk-mintd-mutiny/ldk-node
+      mnemonic=$(tr -d '\n' < /run/secrets/cdk-mintd-mutiny/mnemonic)
+      install -m 0400 -o cdk-mintd-mutiny -g cdk-mintd-mutiny ${mint2ConfigTemplate} /var/lib/cdk-mintd-mutiny/runtime/config.toml
+      ${pkgs.gnused}/bin/sed -i "s|@MINT_MNEMONIC@|$mnemonic|g" /var/lib/cdk-mintd-mutiny/runtime/config.toml
+    '';
+
+    serviceConfig = {
+      Type = "simple";
+      User = "cdk-mintd-mutiny";
+      Group = "cdk-mintd-mutiny";
+      Environment = "RUST_LOG=debug";
+      ExecStart = "${cdkMintdLdkBin}/bin/cdk-mintd-ldk --config /var/lib/cdk-mintd-mutiny/runtime/config.toml";
+      Restart = "always";
+      RestartSec = "5s";
+      StateDirectory = "cdk-mintd-mutiny";
+      StateDirectoryMode = "0750";
+      WorkingDirectory = "/var/lib/cdk-mintd-mutiny";
+
+      # Hardening
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      ReadWritePaths = [ "/var/lib/cdk-mintd-mutiny" ];
     };
   };
 }
