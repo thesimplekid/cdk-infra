@@ -167,6 +167,7 @@ let
           github-runner
           cachix
           gh
+          gnupg
         ];
 
         environment = {
@@ -481,6 +482,7 @@ in {
     pkgs.btop
     pkgs.htop
     pkgs.psmisc
+    pkgs.gnupg
     inputs.agenix.packages."${pkgs.system}".default
   ]) ++ [
     listenerStatus
