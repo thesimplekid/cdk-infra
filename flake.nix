@@ -12,9 +12,13 @@
     cdk = {
       url = "github:cashubtc/cdk";
     };
+
+    cdkOnchain = {
+      url = "github:thesimplekid/cdk/onchain_bdk";
+    };
   };
 
-  outputs = { nixpkgs, disko, agenix, cdk, ... }@inputs:
+  outputs = { nixpkgs, disko, agenix, cdk, cdkOnchain, ... }@inputs:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -72,6 +76,7 @@
             hostName = name;
             cdkMintd = cdk.packages.${system}.cdk-mintd-static;
             cdkMintdLdk = cdk.packages.${system}.cdk-mintd-ldk-static;
+            cdkMintdOnchain = cdkOnchain.packages.${system}.cdk-mintd-static;
           };
         };
 

@@ -1,6 +1,6 @@
 # CDK Mint Server Configuration
 # Runs cdk-mintd with PostgreSQL backend, fronted by Caddy for automatic HTTPS
-{ config, pkgs, lib, hostName, adminKeys, inputs, cdkMintd, cdkMintdLdk, ... }:
+{ config, pkgs, lib, hostName, adminKeys, inputs, cdkMintd, cdkMintdLdk, cdkMintdOnchain, ... }:
 
 let
   # Mint configuration
@@ -12,6 +12,11 @@ let
   mint2Domain = "mutiny.cashudevkit.org";
   mint2ListenHost = "127.0.0.1";
   mint2ListenPort = 8086;
+
+  # Onchain mutinynet mint configuration
+  onchainDomain = "onchain.cashudevkit.org";
+  onchainListenHost = "127.0.0.1";
+  onchainListenPort = 8087;
 
   # Mutinynet LDK dashboard configuration
   dashDomain = "dash.mutiny.cashudevkit.org";
@@ -147,9 +152,80 @@ let
     max_outputs = 1000
   '';
 
+  # Mutinynet mint config template (onchain backend on signet/mutinynet)
+  onchainConfigTemplate = pkgs.writeText "cdk-mintd-onchain-config.toml.tpl" ''
+    [info]
+    url = "https://${onchainDomain}/"
+    listen_host = "${onchainListenHost}"
+    listen_port = ${toString onchainListenPort}
+    mnemonic = "@MINT_MNEMONIC@"
+
+    [info.quote_ttl]
+    mint_ttl = 600
+    melt_ttl = 120
+
+    [info.http_cache]
+    backend = "memory"
+    ttl = 60
+    tti = 60
+
+    [info.logging]
+    # Where to output logs: "stderr" (standard error stream), "file", or "both" (default: "both")
+    output = "both"
+    # Log level for console output (default: "info")
+    console_level = "debug"  
+
+
+    [mint_management_rpc]
+    enabled = false
+
+    [mint_info]
+    name = "cdk onchain test mint"
+    description = "A CDK onchain mint on Mutinynet for testing"
+    description_long = "This mint runs on Mutinynet (signet) using the onchain backend. Not real sats."
+    motd = "Mutinynet onchain testing mint"
+    contact_email = "tsk@thesimplekid.com"
+
+    [database]
+    engine = "sqlite"
+
+    [database.sqlite]
+    path = "/var/lib/cdk-mintd-onchain/cdk-mintd.sqlite"
+
+    [ln]
+    # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits'
+    # ln_backend = "grpcprocessor"
+    ln_backend = "none"
+
+
+    [onchain]
+    onchain_backend = "bdk"
+    min_mint=1
+    max_mint=500000
+    min_melt=1
+    max_melt=500000
+
+    [bdk]
+    network = "signet"
+    chain_source_type = "esplora"
+    esplora_url = "https://mutinynet.com/api"
+    mnemonic = "@MINT_MNEMONIC@"
+    num_confs = 2
+    fee_percent = 0.02
+    reserve_fee_min = 2
+
+    [limits]
+    max_inputs = 1000
+    max_outputs = 1000
+    '';
+
   # The cdk-mintd LDK binary from the static package
   cdkMintdLdkBin = pkgs.writeShellScriptBin "cdk-mintd-ldk" ''
     exec $(find ${cdkMintdLdk}/bin -type f -name 'cdk-mintd*' | head -1) "$@"
+  '';
+
+  cdkMintdOnchainBin = pkgs.writeShellScriptBin "cdk-mintd-onchain" ''
+    exec $(find ${cdkMintdOnchain}/bin -type f -name 'cdk-mintd*' | head -1) "$@"
   '';
 
 in {
@@ -279,6 +355,11 @@ in {
     virtualHosts."${mint2Domain}" = {
       extraConfig = ''
         reverse_proxy ${mint2ListenHost}:${toString mint2ListenPort}
+      '';
+    };
+    virtualHosts."${onchainDomain}" = {
+      extraConfig = ''
+        reverse_proxy ${onchainListenHost}:${toString onchainListenPort}
       '';
     };
     virtualHosts."${forgejoDomain}" = {
@@ -413,6 +494,14 @@ in {
     mode = "0400";
   };
 
+  age.secrets.cdk-mintd-onchain-mnemonic = {
+    file = ../../secrets/cdk-mintd-onchain-mnemonic.age;
+    path = "/run/secrets/cdk-mintd-onchain/mnemonic";
+    owner = "cdk-mintd-onchain";
+    group = "cdk-mintd-onchain";
+    mode = "0400";
+  };
+
   systemd.services.cdk-mintd-mutiny = {
     description = "CDK Mint Daemon (Mutinynet LDK)";
     wantedBy = [ "multi-user.target" ];
@@ -445,6 +534,52 @@ in {
       ProtectHome = true;
       PrivateTmp = true;
       ReadWritePaths = [ "/var/lib/cdk-mintd-mutiny" ];
+    };
+  };
+
+  # ============================================================
+  # cdk-mintd-onchain service (Mutinynet onchain backend)
+  # ============================================================
+
+  users.groups.cdk-mintd-onchain = {};
+  users.users.cdk-mintd-onchain = {
+    isSystemUser = true;
+    group = "cdk-mintd-onchain";
+    home = "/var/lib/cdk-mintd-onchain";
+    createHome = true;
+  };
+
+  systemd.services.cdk-mintd-onchain = {
+    description = "CDK Mint Daemon (Mutinynet onchain)";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network-online.target" "agenix.service" ];
+    wants = [ "network-online.target" ];
+
+    preStart = ''
+      install -d -m 0750 -o cdk-mintd-onchain -g cdk-mintd-onchain /var/lib/cdk-mintd-onchain/runtime
+      mnemonic=$(tr -d '\n' < /run/secrets/cdk-mintd-onchain/mnemonic)
+      install -m 0400 -o cdk-mintd-onchain -g cdk-mintd-onchain ${onchainConfigTemplate} /var/lib/cdk-mintd-onchain/runtime/config.toml
+      ${pkgs.gnused}/bin/sed -i "s|@MINT_MNEMONIC@|$mnemonic|g" /var/lib/cdk-mintd-onchain/runtime/config.toml
+    '';
+
+    serviceConfig = {
+      Type = "simple";
+      User = "cdk-mintd-onchain";
+      Group = "cdk-mintd-onchain";
+      Environment = "RUST_LOG=debug";
+      ExecStart = "${cdkMintdOnchainBin}/bin/cdk-mintd-onchain --config /var/lib/cdk-mintd-onchain/runtime/config.toml";
+      Restart = "always";
+      RestartSec = "5s";
+      StateDirectory = "cdk-mintd-onchain";
+      StateDirectoryMode = "0750";
+      WorkingDirectory = "/var/lib/cdk-mintd-onchain";
+
+      # Hardening
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      ReadWritePaths = [ "/var/lib/cdk-mintd-onchain" ];
     };
   };
 }

@@ -105,7 +105,7 @@ build-mint-01:
 
 # Show mint-01 service status
 status-mint-01:
-  ssh root@{{mint_01_host}} systemctl status cdk-mintd cdk-mintd-mutiny caddy
+  ssh root@{{mint_01_host}} systemctl status cdk-mintd cdk-mintd-mutiny cdk-mintd-onchain caddy
 
 # ============ All Runners Commands ============
 
