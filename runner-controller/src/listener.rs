@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -122,6 +122,19 @@ impl PoolController {
     async fn maintain_pool(&self) -> Result<()> {
         let current_containers: HashSet<String> =
             self.containers.list().await?.into_iter().collect();
+        let github_runners: Option<HashMap<String, (String, bool)>> =
+            match self.github.list_runners().await {
+                Ok(runners) => Some(
+                    runners
+                        .into_iter()
+                        .map(|runner| (runner.name, (runner.status, runner.busy)))
+                        .collect(),
+                ),
+                Err(e) => {
+                    warn!(error = %e, "Failed to list GitHub runners; skipping GitHub state checks this tick");
+                    None
+                }
+            };
 
         for slot in 0..self.config.max_concurrent_jobs {
             let name = ContainerManager::slot_to_container_name(slot);
@@ -150,22 +163,14 @@ impl PoolController {
                         // Runner still active - check for timeout
                         if let Some(state) = self.state_db.get_container(&name)? {
                             let running_secs = state.running_seconds();
-                            let timeout_secs = self.config.job_timeout.as_secs();
-
-                            if running_secs > timeout_secs {
-                                warn!(
-                                    slot,
-                                    name = %name,
-                                    running_secs,
-                                    timeout_secs,
-                                    "Container exceeded timeout, respawning"
-                                );
-                                if let Err(e) = self.respawn_pool_container(&name, slot).await {
-                                    warn!(slot, name = %name, error = %e, "Failed to respawn timed out container");
-                                }
-                            } else {
-                                debug!(slot, name = %name, running_secs, "Container healthy");
-                            }
+                            self.handle_active_runner_state(
+                                &name,
+                                slot,
+                                state,
+                                running_secs,
+                                github_runners.as_ref(),
+                            )
+                            .await?;
                         } else {
                             // Container exists but no state - orphaned
                             // Check if runner completed before respawning
@@ -204,11 +209,99 @@ impl PoolController {
         }
 
         // Clean up stale state entries (in DB but container no longer exists)
+        let latest_containers: HashSet<String> =
+            self.containers.list().await?.into_iter().collect();
         let db_containers = self.state_db.list_containers()?;
         for (name, _) in db_containers {
-            if !current_containers.contains(&name) {
+            if !latest_containers.contains(&name) {
                 info!(name = %name, "Removing stale state entry (container no longer exists)");
                 self.state_db.remove_container(&name)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_active_runner_state(
+        &self,
+        name: &str,
+        slot: usize,
+        mut state: ContainerState,
+        running_secs: u64,
+        github_runners: Option<&HashMap<String, (String, bool)>>,
+    ) -> Result<()> {
+        let Some(github_runners) = github_runners else {
+            debug!(slot, name = %name, running_secs, "Container healthy; GitHub state unavailable");
+            return Ok(());
+        };
+
+        let Some((github_status, busy)) = github_runners.get(name) else {
+            let startup_timeout_secs = self.config.runner_startup_timeout.as_secs();
+            if running_secs > startup_timeout_secs {
+                warn!(
+                    slot,
+                    name = %name,
+                    running_secs,
+                    startup_timeout_secs,
+                    "Runner did not register with GitHub before startup timeout, respawning"
+                );
+                if let Err(e) = self.respawn_pool_container(name, slot).await {
+                    warn!(slot, name = %name, error = %e, "Failed to respawn unregistered runner");
+                }
+            } else {
+                debug!(slot, name = %name, running_secs, "Waiting for runner to register with GitHub");
+            }
+            return Ok(());
+        };
+
+        if *busy {
+            state.mark_busy();
+            self.state_db.put_container(name, &state)?;
+
+            let busy_secs = state.busy_seconds().unwrap_or(0);
+            let timeout_secs = self.config.job_timeout.as_secs();
+
+            if busy_secs > timeout_secs {
+                warn!(
+                    slot,
+                    name = %name,
+                    busy_secs,
+                    timeout_secs,
+                    "Runner job exceeded timeout, respawning"
+                );
+                if let Err(e) = self.respawn_pool_container(name, slot).await {
+                    warn!(slot, name = %name, error = %e, "Failed to respawn timed out runner");
+                }
+            } else {
+                debug!(slot, name = %name, busy_secs, github_status = %github_status, "Runner busy");
+            }
+        } else {
+            if state.busy_since.is_some() {
+                state.mark_idle();
+                self.state_db.put_container(name, &state)?;
+            }
+
+            let startup_timeout_secs = self.config.runner_startup_timeout.as_secs();
+            if github_status != "online" && running_secs > startup_timeout_secs {
+                warn!(
+                    slot,
+                    name = %name,
+                    running_secs,
+                    startup_timeout_secs,
+                    github_status = %github_status,
+                    "Runner is not online after startup timeout, respawning"
+                );
+                if let Err(e) = self.respawn_pool_container(name, slot).await {
+                    warn!(slot, name = %name, error = %e, "Failed to respawn offline runner");
+                }
+            } else {
+                debug!(
+                    slot,
+                    name = %name,
+                    running_secs,
+                    github_status = %github_status,
+                    "Runner idle or starting"
+                );
             }
         }
 
@@ -253,25 +346,9 @@ impl PoolController {
         Ok(())
     }
 
-    /// Graceful shutdown - kill all containers
+    /// Graceful shutdown - stop managing the pool without killing active jobs
     pub async fn shutdown(&self) -> Result<()> {
-        info!("Shutting down, cleaning up all containers");
-
-        // Get all containers (both old and new style for thorough cleanup)
-        let containers = self.containers.list_all().await?;
-        info!(count = containers.len(), "Containers to clean up");
-
-        for name in containers {
-            info!(name = %name, "Cleaning up container on shutdown");
-            if let Err(e) = self.cleanup_container_full(&name).await {
-                warn!(name = %name, error = %e, "Failed to cleanup container on shutdown");
-            }
-        }
-
-        // Clear all state
-        self.state_db.clear_all()?;
-
-        info!("Shutdown complete");
+        info!("Controller shutdown complete; runner containers left running for recovery");
         Ok(())
     }
 }

@@ -10,6 +10,7 @@ pub struct Config {
     pub max_concurrent_jobs: usize,
     pub poll_interval: Duration,
     pub job_timeout: Duration,
+    pub runner_startup_timeout: Duration,
     pub runner_labels: Vec<String>,
     pub state_dir: PathBuf,
     pub http_port: u16,
@@ -44,6 +45,11 @@ impl Config {
             .parse()
             .context("JOB_TIMEOUT must be a valid number")?;
 
+        let runner_startup_timeout_secs: u64 = std::env::var("RUNNER_STARTUP_TIMEOUT")
+            .unwrap_or_else(|_| "600".to_string())
+            .parse()
+            .context("RUNNER_STARTUP_TIMEOUT must be a valid number")?;
+
         let runner_labels = std::env::var("RUNNER_LABELS")
             .unwrap_or_else(|_| "self-hosted,ci,nix,x64,Linux".to_string())
             .split(',')
@@ -66,6 +72,7 @@ impl Config {
             max_concurrent_jobs,
             poll_interval: Duration::from_secs(poll_interval_secs),
             job_timeout: Duration::from_secs(job_timeout_secs),
+            runner_startup_timeout: Duration::from_secs(runner_startup_timeout_secs),
             runner_labels,
             state_dir,
             http_port,

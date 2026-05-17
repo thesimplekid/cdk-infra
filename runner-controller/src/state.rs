@@ -11,6 +11,8 @@ const CONTAINERS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("con
 pub struct ContainerState {
     pub slot: usize,
     pub started_at: u64, // unix timestamp
+    #[serde(default)]
+    pub busy_since: Option<u64>, // unix timestamp, set only while GitHub reports busy
 }
 
 impl ContainerState {
@@ -20,7 +22,11 @@ impl ContainerState {
             .expect("Time went backwards")
             .as_secs();
 
-        Self { slot, started_at }
+        Self {
+            slot,
+            started_at,
+            busy_since: None,
+        }
     }
 
     /// Returns how long this container has been running in seconds
@@ -31,6 +37,31 @@ impl ContainerState {
             .as_secs();
 
         now.saturating_sub(self.started_at)
+    }
+
+    fn now_seconds() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs()
+    }
+
+    /// Mark this runner as busy, preserving the first observed busy timestamp.
+    pub fn mark_busy(&mut self) {
+        if self.busy_since.is_none() {
+            self.busy_since = Some(Self::now_seconds());
+        }
+    }
+
+    /// Mark this runner as idle.
+    pub fn mark_idle(&mut self) {
+        self.busy_since = None;
+    }
+
+    /// Returns how long this runner has been observed as busy.
+    pub fn busy_seconds(&self) -> Option<u64> {
+        self.busy_since
+            .map(|busy_since| Self::now_seconds().saturating_sub(busy_since))
     }
 }
 
@@ -111,7 +142,7 @@ impl StateDb {
         Ok(containers)
     }
 
-    /// Clear all container states (used during shutdown cleanup)
+    /// Clear all container states (used by explicit destructive cleanup paths)
     pub fn clear_all(&self) -> Result<()> {
         let write_txn = self.db.begin_write()?;
         {

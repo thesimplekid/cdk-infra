@@ -1,14 +1,15 @@
-# On-Demand GitHub Actions Runner Controller
-# Implements ARC-style job detection with NixOS containers
+# Fixed-capacity GitHub Actions runner pool
+# Maintains a warm pool of ephemeral NixOS container runners
 # See docs/runner-controller.md for documentation
 { config, pkgs, lib, hostName, adminKeys, inputs, runnerController, extraLabels ? [], ... }:
 
 let
   # Configuration
   githubRepo = "cashubtc/cdk";
-  maxConcurrentJobs = 7;
+  maxConcurrentJobs = 6;
   pollIntervalSeconds = 10;
   jobTimeoutSeconds = 7200;  # 2 hours
+  runnerStartupTimeoutSeconds = 600;  # 10 minutes
 
   # Labels this runner provides (jobs must request a subset of these)
   runnerLabels = [ "self-hosted" "ci" "nix" "x64" "Linux" ] ++ extraLabels;
@@ -17,6 +18,9 @@ let
   # Uses github-runner from nixpkgs (Runner.Listener binary)
   containerTemplate = ''
     { config, pkgs, lib, ... }:
+    let
+      githubRunner = pkgs.github-runner;
+    in
     {
       boot.isContainer = true;
       system.stateVersion = "23.11";
@@ -76,7 +80,7 @@ let
         gnutar gzip
         icu openssl zlib
         stdenv.cc.cc.lib
-        github-runner  # GitHub Actions runner from nixpkgs
+        githubRunner  # GitHub Actions runner from nixpkgs with node20 compat
       ];
 
       programs.nix-ld = {
@@ -163,8 +167,9 @@ let
 
         path = with pkgs; [
           bashInteractive coreutils curl gnutar gzip git docker nix jq findutils
+          iproute2
           inetutils  # provides hostname
-          github-runner
+          githubRunner
           cachix
           gh
           gnupg
@@ -173,6 +178,7 @@ let
         environment = {
           HOME = "/var/lib/github-runner";
           RUNNER_ROOT = "/var/lib/github-runner";
+          RUNNER_MANUALLY_TRAP_SIG = "1";
         };
 
         script = '''
@@ -185,15 +191,41 @@ let
           WORK_DIR="/var/lib/github-runner-work"
           LOGS_DIR="/var/log/github-runner"
 
+          sync_diag() {
+            mkdir -p "$LOGS_DIR"
+            if [ -d "$STATE_DIR/_diag" ]; then
+              cp -r "$STATE_DIR/_diag/." "$LOGS_DIR/" || true
+            fi
+          }
+          trap sync_diag EXIT
+
           echo "Waiting for network..."
-          for i in $(seq 1 30); do
+          NETWORK_READY=0
+          for i in $(seq 1 150); do
             if curl -sf --max-time 5 https://api.github.com > /dev/null 2>&1; then
               echo "Network is ready"
+              NETWORK_READY=1
               break
             fi
             echo "Waiting for network... attempt $i"
+            if [ "$((i % 10))" -eq 0 ]; then
+              echo "Route table:"
+              ip route || true
+              echo "GitHub DNS:"
+              getent hosts api.github.com || true
+            fi
             sleep 2
           done
+          if [ "$NETWORK_READY" -ne 1 ]; then
+            echo "ERROR: Network did not become ready"
+            echo "Route table:"
+            ip route || true
+            echo "GitHub DNS:"
+            getent hosts api.github.com || true
+            echo "GitHub curl diagnostics:"
+            curl -v --max-time 10 https://api.github.com >/dev/null || true
+            exit 1
+          fi
 
           echo "Waiting for registration token..."
           for i in $(seq 1 30); do
@@ -228,15 +260,10 @@ let
             --ephemeral \
             --token "$REG_TOKEN"
 
-          # Move _diag to logs dir
-          mkdir -p "$LOGS_DIR"
-          if [ -d "$STATE_DIR/_diag" ]; then
-            cp -r "$STATE_DIR/_diag/." "$LOGS_DIR/" || true
-            rm -rf "$STATE_DIR/_diag"
-          fi
+          sync_diag
 
           echo "Starting runner..."
-          exec Runner.Listener run --startuptype service
+          exec run.sh --startuptype service
         ''';
 
         serviceConfig = {
@@ -574,6 +601,7 @@ in {
       MAX_CONCURRENT = toString maxConcurrentJobs;
       POLL_INTERVAL = toString pollIntervalSeconds;
       JOB_TIMEOUT = toString jobTimeoutSeconds;
+      RUNNER_STARTUP_TIMEOUT = toString runnerStartupTimeoutSeconds;
       RUNNER_LABELS = lib.concatStringsSep "," runnerLabels;
       STATE_DIR = "/var/lib/runner-controller";
       HTTP_PORT = "8080";

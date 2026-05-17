@@ -1,6 +1,6 @@
 # CDK Mint Server Configuration
 # Runs cdk-mintd with PostgreSQL backend, fronted by Caddy for automatic HTTPS
-{ config, pkgs, lib, hostName, adminKeys, inputs, cdkMintd, cdkMintdLdk, cdkMintdOnchain, ... }:
+{ config, pkgs, lib, hostName, adminKeys, inputs, cdkMintd, cdkMintdLdk, cdkMintdOnchain, cdkMintdBls, ... }:
 
 let
   # Mint configuration
@@ -17,6 +17,11 @@ let
   onchainDomain = "onchain.cashudevkit.org";
   onchainListenHost = "127.0.0.1";
   onchainListenPort = 8087;
+
+  # BLS fake mint configuration
+  blsDomain = "bls.thesimplekid.dev";
+  blsListenHost = "127.0.0.1";
+  blsListenPort = 8088;
 
   # Mutinynet LDK dashboard configuration
   dashDomain = "dash.mutiny.cashudevkit.org";
@@ -159,11 +164,63 @@ let
     max_outputs = 1000
   '';
 
+  blsConfigTemplate = pkgs.writeText "cdk-mintd-bls-config.toml.tpl" ''
+    [info]
+    url = "https://${blsDomain}/"
+    listen_host = "${blsListenHost}"
+    listen_port = ${toString blsListenPort}
+    mnemonic = "@MINT_MNEMONIC@"
+    input_fee_ppk = 100
+
+    [info.quote_ttl]
+    mint_ttl = 600
+    melt_ttl = 600
+
+    [info.http_cache]
+    backend = "memory"
+    ttl = 60
+    tti = 60
+
+    [mint_management_rpc]
+    enabled = false
+
+    [mint_info]
+    name = "cdk bls test mint"
+    description = "These are not real sats for testing only"
+    description_long = "These sats are not backed by anything and should only be used for BLS testing"
+    motd = "BLS fake sats for testing"
+    contact_email = "tsk@thesimplekid.com"
+
+    [database]
+    engine = "sqlite"
+
+    [database.sqlite]
+    path = "/var/lib/cdk-mintd-bls/cdk-mintd.sqlite"
+
+    [ln]
+    ln_backend = "fakewallet"
+
+    [fake_wallet]
+    supported_units = ["sat", "usd"]
+    fee_percent = 0.02
+    reserve_fee_min = 1
+    min_delay_time = 1
+    max_delay_time = 3
+
+    [limits]
+    max_inputs = 1000
+    max_outputs = 1000
+  '';
+
   # The cdk-mintd binary from the static package
   # The static build names the binary with version and arch suffix
   # We create a wrapper that finds and runs it
   cdkMintdBin = pkgs.writeShellScriptBin "cdk-mintd" ''
     exec $(find ${cdkMintd}/bin -type f -name 'cdk-mintd*' | head -1) "$@"
+  '';
+
+  cdkMintdBlsBin = pkgs.writeShellScriptBin "cdk-mintd-bls" ''
+    exec $(find ${cdkMintdBls}/bin -type f -name 'cdk-mintd*' | head -1) "$@"
   '';
 
   # Mutinynet mint config template (LDK node backend on signet/mutinynet)
@@ -287,6 +344,12 @@ let
     num_confs = 2
     fee_percent = 0.02
     reserve_fee_min = 2
+
+    [bdk.batch_config]
+    quote_fixed_safety_sat = 200      # flat sats added after the raw fee estimate
+    fee_options = ["immediate", "standard", "economy"]
+
+
 
     [limits]
     max_inputs = 1000
@@ -565,6 +628,11 @@ in {
         reverse_proxy ${onchainListenHost}:${toString onchainListenPort}
       '';
     };
+    virtualHosts."${blsDomain}" = {
+      extraConfig = ''
+        reverse_proxy ${blsListenHost}:${toString blsListenPort}
+      '';
+    };
     virtualHosts."${forgejoDomain}" = {
       extraConfig = ''
         reverse_proxy ${forgejoListenHost}:${toString forgejoListenPort}
@@ -633,6 +701,14 @@ in {
     mode = "0400";
   };
 
+  age.secrets.cdk-mintd-bls-mnemonic = {
+    file = ../../secrets/cdk-mintd-mnemonic.age;
+    path = "/run/secrets/cdk-mintd-bls/mnemonic";
+    owner = "cdk-mintd-bls";
+    group = "cdk-mintd-bls";
+    mode = "0400";
+  };
+
   # Bcrypt hash for dash.mutiny basic auth (generate with: caddy hash-password)
   age.secrets.dash-basicauth-hash = {
     file = ../../secrets/dash-basicauth-hash.age;
@@ -673,6 +749,52 @@ in {
       ProtectHome = true;
       PrivateTmp = true;
       ReadWritePaths = [ "/var/lib/cdk-mintd" ];
+    };
+  };
+
+  # ============================================================
+  # cdk-mintd-bls service (BLS fake mint)
+  # ============================================================
+
+  users.groups.cdk-mintd-bls = {};
+  users.users.cdk-mintd-bls = {
+    isSystemUser = true;
+    group = "cdk-mintd-bls";
+    home = "/var/lib/cdk-mintd-bls";
+    createHome = true;
+  };
+
+  systemd.services.cdk-mintd-bls = {
+    description = "CDK Mint Daemon (BLS fakewallet)";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network-online.target" "agenix.service" ];
+    wants = [ "network-online.target" ];
+
+    preStart = ''
+      install -d -m 0750 -o cdk-mintd-bls -g cdk-mintd-bls /var/lib/cdk-mintd-bls/runtime
+      mnemonic=$(tr -d '\n' < /run/secrets/cdk-mintd-bls/mnemonic)
+      install -m 0400 -o cdk-mintd-bls -g cdk-mintd-bls ${blsConfigTemplate} /var/lib/cdk-mintd-bls/runtime/config.toml
+      ${pkgs.gnused}/bin/sed -i "s|@MINT_MNEMONIC@|$mnemonic|g" /var/lib/cdk-mintd-bls/runtime/config.toml
+    '';
+
+    serviceConfig = {
+      Type = "simple";
+      User = "cdk-mintd-bls";
+      Group = "cdk-mintd-bls";
+      Environment = "RUST_LOG=debug";
+      ExecStart = "${cdkMintdBlsBin}/bin/cdk-mintd-bls --config /var/lib/cdk-mintd-bls/runtime/config.toml";
+      Restart = "always";
+      RestartSec = "5s";
+      StateDirectory = "cdk-mintd-bls";
+      StateDirectoryMode = "0750";
+      WorkingDirectory = "/var/lib/cdk-mintd-bls";
+
+      # Hardening
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      ReadWritePaths = [ "/var/lib/cdk-mintd-bls" ];
     };
   };
 

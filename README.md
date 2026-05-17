@@ -60,7 +60,7 @@ The GitHub Runner token is managed via `agenix`. To update or rotate the token:
 The runner configuration is defined in `hosts/runner/runner-controller.nix`. Key parameters include:
 
 -   `githubRepo`: Set to `"cashubtc/cdk"`.
--   `maxConcurrentJobs`: Defaults to `7` (adjust based on host resources).
+-   `maxConcurrentJobs`: Set to `6` (adjust based on host resources).
 -   `runnerLabels`: Base labels include `["self-hosted", "ci", "nix", "x64", "Linux"]`.
     -   Host-specific labels (e.g., `fuzz-a`) are injected in `flake.nix`.
 

@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
     disko = {
       url = "github:nix-community/disko";
@@ -13,12 +13,12 @@
       url = "github:cashubtc/cdk";
     };
 
-    cdkOnchain = {
-      url = "github:thesimplekid/cdk/onchain_bdk";
+    cdkBls = {
+      url = "github:thesimplekid/cdk/bls";
     };
   };
 
-  outputs = { nixpkgs, disko, agenix, cdk, cdkOnchain, ... }@inputs:
+  outputs = { nixpkgs, disko, agenix, cdk, cdkBls, ... }@inputs:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -76,7 +76,8 @@
             hostName = name;
             cdkMintd = cdk.packages.${system}.cdk-mintd-static;
             cdkMintdLdk = cdk.packages.${system}.cdk-mintd-ldk-static;
-            cdkMintdOnchain = cdkOnchain.packages.${system}.cdk-mintd-static;
+            cdkMintdOnchain = cdk.packages.${system}.cdk-mintd-static;
+            cdkMintdBls = cdkBls.packages.${system}.cdk-mintd-static;
           };
         };
 

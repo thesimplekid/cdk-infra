@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
         repo = %config.github_repo,
         pool_size = config.max_concurrent_jobs,
         poll_interval = ?config.poll_interval,
+        runner_startup_timeout = ?config.runner_startup_timeout,
         labels = ?config.runner_labels,
         http_port = config.http_port,
         "Configuration loaded"
@@ -75,6 +76,7 @@ async fn main() -> Result<()> {
         pool_size: config.max_concurrent_jobs,
         poll_interval_seconds: config.poll_interval.as_secs(),
         job_timeout_seconds: config.job_timeout.as_secs(),
+        runner_startup_timeout_seconds: config.runner_startup_timeout.as_secs(),
     };
     let http_addr: SocketAddr = ([0, 0, 0, 0], config.http_port).into();
     let http_shutdown_rx = shutdown_tx.subscribe();

@@ -1,6 +1,9 @@
 use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -127,6 +130,10 @@ impl ContainerManager {
                         && slot.chars().all(|c| c.is_ascii_digit());
                 }
 
+                if let Some(job_id) = name.strip_prefix('j') {
+                    return !job_id.is_empty() && job_id.chars().all(|c| c.is_ascii_digit());
+                }
+
                 false
             })
             .collect();
@@ -156,7 +163,7 @@ impl ContainerManager {
             }
         }
 
-        // Fallback - shouldn't happen with max 7 concurrent
+        // Fallback - shouldn't happen with the configured runner pool size.
         Ok(100)
     }
 
@@ -215,8 +222,21 @@ impl ContainerManager {
 
         // Write token to state dir temporarily
         let token_file = self.state_dir.join(format!("{}.token", name));
-        std::fs::write(&token_file, token)
+        let mut token_handle = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&token_file)
+            .context("Failed to open token file")?;
+        token_handle
+            .write_all(token.as_bytes())
             .context("Failed to write token file")?;
+        std::fs::set_permissions(
+            &token_file,
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .context("Failed to set token file permissions")?;
 
         // Create container
         let local_addr = format!("192.168.{}.11", subnet);
@@ -252,6 +272,11 @@ impl ContainerManager {
 
         std::fs::copy(&token_file, &container_token_path)
             .context("Failed to copy token to container")?;
+        std::fs::set_permissions(
+            &container_token_path,
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .context("Failed to set container token file permissions")?;
 
         // Start container
         if let Err(e) = self.run_container_cmd(&["start", &name]).await {
@@ -286,7 +311,8 @@ impl ContainerManager {
         match status {
             "active" | "activating" | "reloading" => Ok(false),
             "failed" => {
-                debug!(name = %name, "Runner service failed");
+                self.log_runner_service_diagnostics(name).await;
+                warn!(name = %name, "Runner service failed");
                 Ok(true)
             }
             "inactive" => {
@@ -300,7 +326,8 @@ impl ContainerManager {
                     .unwrap_or_default();
 
                 if result.contains("success") || result.contains("exit-code") {
-                    debug!(name = %name, "Runner service completed");
+                    self.log_runner_service_diagnostics(name).await;
+                    info!(name = %name, "Runner service completed");
                     Ok(true)
                 } else {
                     // Service hasn't run yet
@@ -312,6 +339,43 @@ impl ContainerManager {
                 Ok(false)
             }
         }
+    }
+
+    async fn log_runner_service_diagnostics(&self, name: &str) {
+        let summary = self
+            .run_in_container(
+                name,
+                &[
+                    "systemctl",
+                    "show",
+                    "github-runner.service",
+                    "--property=ActiveState,SubState,Result,ExecMainStatus,ExecMainCode",
+                ],
+            )
+            .await
+            .unwrap_or_else(|e| format!("failed to read service summary: {e:#}"));
+
+        let journal = self
+            .run_in_container(
+                name,
+                &[
+                    "journalctl",
+                    "-u",
+                    "github-runner.service",
+                    "-n",
+                    "80",
+                    "--no-pager",
+                ],
+            )
+            .await
+            .unwrap_or_else(|e| format!("failed to read service journal: {e:#}"));
+
+        warn!(
+            name = %name,
+            service_summary = %summary.trim(),
+            service_journal = %journal.trim(),
+            "Runner service exited"
+        );
     }
 
     /// Stop a container

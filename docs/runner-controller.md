@@ -1,43 +1,28 @@
-# GitHub Actions Runner Controller
+# GitHub Actions Runner Pool
 
-A Rust-based on-demand GitHub Actions runner controller for NixOS, implementing ARC-style (Actions Runner Controller) job detection with ephemeral NixOS containers.
+A Rust controller for a fixed-capacity pool of ephemeral GitHub Actions runners on NixOS. Each runner runs inside a NixOS container managed by `nixos-container`.
 
 ## Overview
 
-Instead of maintaining a pool of idle runners, this controller:
-1. Polls GitHub API for queued jobs
-2. Spawns ephemeral NixOS containers on-demand
-3. Each container runs exactly one job then self-destructs
-4. Zero resource usage when no jobs are queued
+The controller keeps a warm pool of runner slots available:
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                  NixOS Host (cdk-runner-01)                      │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │           runner-controller.service (persistent)           │  │
-│  │                                                            │  │
-│  │  - Polls GitHub API every 10s for queued workflow runs     │  │
-│  │  - Filters for jobs matching our labels                    │  │
-│  │  - Spawns container when job is queued                     │  │
-│  │  - Monitors container completion and cleans up             │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              │ job detected                      │
-│                              ▼                                   │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │           Ephemeral Container (j1234567)                   │  │
-│  │                                                            │  │
-│  │  1. Container created with job-specific name               │  │
-│  │  2. GitHub runner registers with --ephemeral               │  │
-│  │  3. Runner picks up the specific job                       │  │
-│  │  4. Job executes                                           │  │
-│  │  5. Runner exits (--ephemeral auto-deregisters)            │  │
-│  │  6. Container destroyed                                    │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+1. Maintains `MAX_CONCURRENT` NixOS containers.
+2. Registers one ephemeral GitHub Actions runner per container.
+3. Lets GitHub schedule matching jobs onto idle runners.
+4. Replaces a container after its ephemeral runner completes one job.
+5. Reconciles local state, container state, and GitHub runner state after restarts.
+
+This is a fixed-capacity warm pool, not job-queue autoscaling. The host has a fixed amount of compute, and `MAX_CONCURRENT` is the capacity limit.
+
+```text
+NixOS host
+  runner-controller.service
+    slot 0 -> abc12-r0 -> ephemeral GitHub runner
+    slot 1 -> abc12-r1 -> ephemeral GitHub runner
+    slot 2 -> abc12-r2 -> ephemeral GitHub runner
+    slot 3 -> abc12-r3 -> ephemeral GitHub runner
+    slot 4 -> abc12-r4 -> ephemeral GitHub runner
+    slot 5 -> abc12-r5 -> ephemeral GitHub runner
 ```
 
 ## Configuration
@@ -47,135 +32,118 @@ The controller is configured via environment variables in the systemd service:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GITHUB_REPO` | required | Repository in `owner/repo` format |
-| `GITHUB_TOKEN_FILE` | required | Path to GitHub PAT with `repo` and `admin:org` scopes |
-| `MAX_CONCURRENT` | 7 | Maximum concurrent job containers |
-| `POLL_INTERVAL` | 10 | Seconds between GitHub API polls |
-| `JOB_TIMEOUT` | 7200 | Maximum job duration (2 hours) |
+| `GITHUB_TOKEN_FILE` | required | Path to GitHub PAT with runner administration permissions |
+| `MAX_CONCURRENT` | 6 | Number of warm runner slots |
+| `POLL_INTERVAL` | 10 | Seconds between reconciliation ticks |
+| `JOB_TIMEOUT` | 7200 | Maximum observed busy duration for a runner |
+| `RUNNER_STARTUP_TIMEOUT` | 600 | Maximum time for a container to register and become online |
 | `RUNNER_LABELS` | self-hosted,ci,nix,x64,Linux | Comma-separated runner labels |
 | `STATE_DIR` | /var/lib/runner-controller | State directory for tracking |
 | `HTTP_PORT` | 8080 | HTTP API port for status/health |
 
-## Container Lifecycle
+## Lifecycle
 
-1. **Job Detection**: Controller polls GitHub API for queued/waiting/pending workflow runs
-2. **Label Matching**: Jobs must request a subset of the labels we provide
-3. **Container Creation**:
-   - Name format: `j` + last 7 digits of job ID (e.g., `j1234567`)
-   - Unique subnet allocated (192.168.100-199.0/24)
-   - Registration token written to container filesystem
-4. **Runner Registration**: Container's systemd service configures and starts the GitHub runner with `--ephemeral`
-5. **Job Execution**: Runner picks up the job and executes the workflow
-6. **Cleanup**: On completion/failure/timeout, the controller:
-   - Deregisters runner from GitHub via API
-   - Stops and destroys the container
-   - Cleans up nspawn config, profiles, and network interfaces
+1. **Startup reconciliation**
+   The controller lists runner containers, removes stale old-style `j*` containers, and recovers state for existing pool containers.
+
+2. **Slot maintenance**
+   Each slot maps to a stable container name. Missing slots are created with a fresh GitHub registration token.
+
+3. **Runner registration**
+   The container's `github-runner.service` configures an ephemeral runner using the provided labels and starts `Runner.Listener`.
+
+4. **Job execution**
+   GitHub assigns jobs to idle registered runners. The controller checks GitHub runner state and records when a runner is observed as busy.
+
+5. **Replacement**
+   Completed, failed, timed-out, or unhealthy containers are deregistered from GitHub, destroyed, and replaced.
+
+6. **Shutdown**
+   Normal controller shutdown is non-destructive. Existing runner containers are left running so deploys and service restarts do not cancel active jobs.
+
+## Resource Policy
+
+The current runner hosts are sized for Rust-heavy CI:
+
+```text
+16 CPU cores
+32 GB RAM
+6 runner slots
+350% CPU quota per container
+7 GB memory max per container
+```
+
+The per-container caps preserve headroom for individual heavy Rust jobs, but six simultaneous peak jobs can overcommit the host. Monitor memory pressure and reduce per-container limits if the pool runs all slots at sustained load.
 
 ## HTTP API
 
-The controller exposes an HTTP API for monitoring:
+- `GET /health` - health check
+- `GET /status` - JSON status with pool size, active containers, timeouts, and per-container runtime/busy time
 
-- `GET /health` - Health check (returns 200 OK)
-- `GET /status` - JSON status with active containers and configuration
+Example:
 
-Example status response:
 ```json
 {
-  "active_containers": [
+  "pool_size": 6,
+  "active_containers": 6,
+  "containers": [
     {
-      "name": "j1234567",
-      "job_id": 41234567890,
-      "running_seconds": 145
+      "name": "abc12-r0",
+      "slot": 0,
+      "running_seconds": 145,
+      "busy_seconds": null
     }
   ],
-  "max_concurrent": 7,
   "poll_interval_seconds": 10,
-  "job_timeout_seconds": 7200
+  "job_timeout_seconds": 7200,
+  "runner_startup_timeout_seconds": 600,
+  "uptime_seconds": 3600
 }
 ```
 
 ## Helper Scripts
 
 ### runner-status
+
 Shows current controller status, active containers, and GitHub runners:
+
 ```bash
 runner-status
 ```
 
 ### cleanup-github-runners
-Removes offline runners from GitHub that no longer have active containers:
+
+Removes offline GitHub runners that no longer have active containers:
+
 ```bash
 cleanup-github-runners
 ```
 
 ### cleanup-all-containers
-Emergency cleanup - stops all job containers and deregisters from GitHub:
+
+Emergency cleanup. Stops runner containers, deregisters GitHub runners, and removes local artifacts:
+
 ```bash
 cleanup-all-containers
 ```
 
-## Container Template
-
-Each container is created from `/etc/nixos/ci-container-template.nix` which provides:
-- Docker daemon for container-based actions
-- GitHub runner package from nixpkgs
-- Nix with flakes enabled
-- Common build tools (git, curl, jq, etc.)
-- nix-ld for running dynamically-linked binaries
-
-## Resource Limits
-
-Containers are constrained via systemd resource controls (see `container-resource-limits.nix`):
-- CPU quota per container
-- Memory limits
-- No swap
-
 ## Logs
 
 View controller logs:
+
 ```bash
 journalctl -u runner-controller -f
 ```
 
 View container logs:
-```bash
-# List containers
-nixos-container list | grep '^j'
 
-# View specific container's runner logs
-nixos-container run j1234567 -- journalctl -u github-runner
+```bash
+nixos-container list
+nixos-container run abc12-r0 -- journalctl -u github-runner
 ```
 
-## Troubleshooting
+## Notes
 
-### Container stuck / not cleaning up
-```bash
-# Check container status
-nixos-container status j1234567
-
-# Force cleanup
-cleanup-all-containers
-```
-
-### Ghost runners in GitHub
-```bash
-# Remove offline runners
-cleanup-github-runners
-```
-
-### Controller not starting
-```bash
-# Check for token file
-cat /run/secrets/github-runner/token
-
-# Check service status
-systemctl status runner-controller
-journalctl -u runner-controller --no-pager -n 50
-```
-
-## Architecture Notes
-
-- **Why polling instead of webhooks?** Simpler deployment - no need for public endpoint, firewall rules, or webhook secret management. 10s polling adds minimal latency for CI workloads.
-
-- **Why ephemeral containers?** Each job gets a clean environment. No state leakage between jobs. Automatic deregistration via `--ephemeral` flag prevents ghost runners.
-
-- **Why Rust?** The original bash implementation (~450 lines) had issues with error handling, race conditions, and state management. Rust provides proper error handling, async concurrency, and typed API responses.
+- GitHub is the scheduler. The controller does not poll workflow-job queues.
+- `JOB_TIMEOUT` applies to observed busy time, not total container age.
+- Normal service restarts do not destroy containers. Use `cleanup-all-containers` for explicit destructive cleanup.

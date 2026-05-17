@@ -2,17 +2,20 @@
 { config, lib, ... }:
 
 {
-  # Apply resource limits to all ci- containers via systemd
+  # Apply resource limits to all runner containers via systemd.
+  # Runner hosts are 16-core / 32 GB machines. The warm pool has six slots;
+  # these per-container caps keep individual Rust-heavy jobs bounded, but
+  # simultaneous peak usage can still overcommit the host.
   # Note: Wildcard matching for dynamic container names
   systemd.services."container@" = {
     serviceConfig = {
-      # CPU: 8 cores per container
-      CPUQuota = "800%";
+      # CPU: 3.5 cores per container
+      CPUQuota = "350%";
       CPUWeight = 100;
 
-      # Memory: 16 GB per container
-      MemoryMax = "16G";
-      MemoryHigh = "14G";
+      # Memory: 7 GB per container
+      MemoryMax = "7G";
+      MemoryHigh = "6G";
       MemorySwapMax = "0";  # No swap
 
       # Tasks limit (prevent fork bombs)

@@ -22,6 +22,7 @@ pub struct AppState {
     pub pool_size: usize,
     pub poll_interval_seconds: u64,
     pub job_timeout_seconds: u64,
+    pub runner_startup_timeout_seconds: u64,
 }
 
 #[derive(Serialize)]
@@ -31,6 +32,7 @@ pub struct StatusResponse {
     pub containers: Vec<ContainerInfo>,
     pub poll_interval_seconds: u64,
     pub job_timeout_seconds: u64,
+    pub runner_startup_timeout_seconds: u64,
     pub uptime_seconds: u64,
 }
 
@@ -39,6 +41,7 @@ pub struct ContainerInfo {
     pub name: String,
     pub slot: usize,
     pub running_seconds: u64,
+    pub busy_seconds: Option<u64>,
 }
 
 /// GET /health - simple health check
@@ -50,7 +53,10 @@ async fn health() -> impl IntoResponse {
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
     let db_containers = match state.state_db.list_containers() {
         Ok(c) => c,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list containers").into_response(),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list containers")
+                .into_response()
+        }
     };
 
     let containers: Vec<ContainerInfo> = db_containers
@@ -59,6 +65,7 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
             name,
             slot: container_state.slot,
             running_seconds: container_state.running_seconds(),
+            busy_seconds: container_state.busy_seconds(),
         })
         .collect();
 
@@ -68,6 +75,7 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
         containers,
         poll_interval_seconds: state.poll_interval_seconds,
         job_timeout_seconds: state.job_timeout_seconds,
+        runner_startup_timeout_seconds: state.runner_startup_timeout_seconds,
         uptime_seconds: state.start_time.elapsed().as_secs(),
     };
 

@@ -10,6 +10,8 @@ pub struct RunnersResponse {
 pub struct Runner {
     pub id: u64,
     pub name: String,
+    pub status: String,
+    pub busy: bool,
 }
 
 /// Response from /repos/{owner}/{repo}/actions/runners/registration-token

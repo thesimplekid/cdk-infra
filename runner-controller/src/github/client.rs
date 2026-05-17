@@ -238,9 +238,23 @@ impl GitHubClient {
 
     /// List all runners for the repository
     pub async fn list_runners(&self) -> Result<Vec<Runner>> {
-        let endpoint = format!("/repos/{}/actions/runners?per_page=100", self.repo);
-        let response: RunnersResponse = self.get(&endpoint).await?;
-        Ok(response.runners)
+        let mut runners = Vec::new();
+
+        for page in 1.. {
+            let endpoint = format!(
+                "/repos/{}/actions/runners?per_page=100&page={}",
+                self.repo, page
+            );
+            let response: RunnersResponse = self.get(&endpoint).await?;
+            let count = response.runners.len();
+            runners.extend(response.runners);
+
+            if count < 100 {
+                break;
+            }
+        }
+
+        Ok(runners)
     }
 
     /// Delete a runner by ID
