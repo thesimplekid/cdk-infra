@@ -45,5 +45,6 @@
     fsType = "ext4";
   };
 
-  swapDevices = lib.mkForce [ ];
+  # Swap is declared per-host (e.g. swapfile) rather than forced empty here,
+  # so individual hosts can add swap without fighting disko defaults.
 }
