@@ -102,6 +102,8 @@ let
 
       nix.settings = {
         experimental-features = [ "nix-command" "flakes" ];
+        # CI jobs evaluate trusted repository flakes that configure Cachix caches.
+        accept-flake-config = true;
         trusted-users = [ "root" "github-runner" ];
         substituters = [
           "https://cache.nixos.org"
@@ -493,6 +495,7 @@ in {
     settings = {
       max-jobs = 2;
       auto-optimise-store = true;
+      accept-flake-config = true;
       # Trust github-runner user (UID 1000 in containers, mapped to host)
       trusted-users = [ "root" "github-runner" ];
     };
@@ -510,7 +513,7 @@ in {
     pkgs.htop
     pkgs.psmisc
     pkgs.gnupg
-    inputs.agenix.packages."${pkgs.system}".default
+    inputs.agenix.packages."${pkgs.stdenv.hostPlatform.system}".default
   ]) ++ [
     listenerStatus
     cleanupGithubRunners
