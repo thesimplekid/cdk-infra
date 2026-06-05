@@ -151,6 +151,10 @@ let
 
     [ln]
     ln_backend = "fakewallet"
+    min_mint = 1
+    max_mint = 500000
+    min_melt = 1
+    max_melt = 500000
 
     [fake_wallet]
     supported_units = ["sat", "usd"]
@@ -199,6 +203,10 @@ let
 
     [ln]
     ln_backend = "fakewallet"
+    min_mint = 1
+    max_mint = 500000
+    min_melt = 1
+    max_melt = 500000
 
     [fake_wallet]
     supported_units = ["sat", "usd"]
@@ -258,6 +266,10 @@ let
 
     [ln]
     ln_backend = "ldknode"
+    min_mint = 1
+    max_mint = 500000
+    min_melt = 1
+    max_melt = 500000
 
     [ldk_node]
     fee_percent = 0.02
@@ -325,7 +337,10 @@ let
     # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits'
     # ln_backend = "grpcprocessor"
     ln_backend = "none"
-
+    min_mint = 1
+    max_mint = 500000
+    min_melt = 1
+    max_melt = 500000
 
     [onchain]
     onchain_backend = "bdk"
