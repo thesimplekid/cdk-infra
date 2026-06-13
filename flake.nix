@@ -10,7 +10,7 @@
     agenix.url = "github:ryantm/agenix";
 
     cdk = {
-      url = "github:cashubtc/cdk";
+      url = "github:cashubtc/cdk?rev=86a7c6cacb362daa67a0d636e303b66faf3965d9";
     };
 
     cdkBls = {
@@ -76,7 +76,6 @@
             hostName = name;
             cdkMintd = cdk.packages.${system}.cdk-mintd-static;
             cdkMintdLdk = cdk.packages.${system}.cdk-mintd-ldk-static;
-            cdkMintdOnchain = cdk.packages.${system}.cdk-mintd-static;
             cdkMintdBls = cdkBls.packages.${system}.cdk-mintd-static;
           };
         };
