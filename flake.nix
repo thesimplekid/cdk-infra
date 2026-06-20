@@ -16,9 +16,13 @@
     cdkBls = {
       url = "github:thesimplekid/cdk/bls";
     };
+
+    fiach = {
+      url = "github:thesimplekid/fiach";
+    };
   };
 
-  outputs = { nixpkgs, disko, agenix, cdk, cdkBls, ... }@inputs:
+  outputs = { nixpkgs, disko, agenix, cdk, cdkBls, fiach, ... }@inputs:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -66,6 +70,7 @@
 
             disko.nixosModules.disko
             agenix.nixosModules.default
+            fiach.nixosModules.default
 
             ./disk-config/bios-vps.nix
             ./hosts/mint/cdk-mint.nix

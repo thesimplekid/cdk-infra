@@ -370,6 +370,11 @@ in {
     };
   };
   services.resolved.enable = true;
+  # Fiach's veth sandbox enables systemd-networkd for transient vb-* links.
+  # The host's primary network is configured by the regular networking module,
+  # so networkd wait-online can time out during activation without indicating a
+  # real connectivity problem.
+  systemd.network.wait-online.enable = false;
 
   # System settings
   system.stateVersion = "23.11";
@@ -663,6 +668,40 @@ in {
     owner = "caddy";
     group = "caddy";
     mode = "0400";
+  };
+
+  age.secrets.fiach-env = {
+    file = ../../secrets/fiach-env.age;
+    path = "/run/secrets/fiach/env";
+    mode = "0400";
+  };
+
+  services.fiach = {
+    enable = true;
+    repos = [ "cashubtc/cdk" ];
+    # personas = [ "builtin:pr-review" "builtin:security" ];
+    personas = [ "builtin:pr-review" ];
+    reportMode = "hybrid";
+    syncRepo = "cashubtc/cdk-reviews";
+    provider = "openrouter";
+    model = "google/gemini-3.1-pro-preview";
+    verifierProvider = "openrouter";
+    verifierModel = "openai/gpt-5.5";
+    dedupeExistingComments = true;
+    dedupeProvider = "openrouter";
+    dedupeModel = "google/gemini-3.1-pro-preview";
+    maxWorkers = 1;
+    maxRetries = 10;
+    maxTurns = 300;
+    maxCostUsd = 5.0;
+    port = 3010;
+    sandbox.enable = true;
+    sandbox.networkMode = "veth";
+    prStates = [ "open" ];
+    drafts = false;
+    updatedWithinDays = 10;
+    allowedAuthorAssociations = [ "COLLABORATOR" "CONTRIBUTOR" "MEMBER" "OWNER" ];
+    environmentFile = config.age.secrets.fiach-env.path;
   };
 
   systemd.services.cdk-mintd = {

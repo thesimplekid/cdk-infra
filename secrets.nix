@@ -31,5 +31,6 @@ in
   "secrets/cdk-mintd-mutiny-mnemonic.age".publicKeys = mints ++ users;
   "secrets/cdk-mintd-onchain-mnemonic.age".publicKeys = mints ++ users;
   "secrets/dash-basicauth-hash.age".publicKeys = mints ++ users;
+  "secrets/fiach-env.age".publicKeys = mints ++ users;
   "secrets/forgejo-runner-token.age".publicKeys = runners ++ users;
 }
