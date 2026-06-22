@@ -85,7 +85,7 @@
           };
         };
 
-      makeRunnerVps = name: extraLabels:
+      makeRunnerVps = name: extraLabels: extraModules:
         nixpkgs.lib.nixosSystem {
           inherit system;
           modules = [
@@ -96,10 +96,10 @@
             agenix.nixosModules.default
 
             ./disk-config/hetzner-vps.nix
-            ./hosts/runner/runner-controller.nix  # On-demand containers (ARC-style)
+            ./hosts/runner/runner-controller.nix # On-demand containers (ARC-style)
             ./hosts/runner/container-resource-limits.nix
             ./hosts/runner/hardware-configuration-amd.nix
-          ];
+          ] ++ extraModules;
           specialArgs = {
             inherit inputs adminKeys runnerController extraLabels;
             hostName = name;
@@ -114,8 +114,10 @@
       };
 
       nixosConfigurations = {
-        cdk-runner-01 = makeRunnerVps "cdk-runner-01" [ "fuzz-a" ];
-        cdk-runner-02 = makeRunnerVps "cdk-runner-02" [ "fuzz-b" ];
+        cdk-runner-01 = makeRunnerVps "cdk-runner-01" [ "fuzz-a" ] [
+          ./hosts/runner/mutinynet-backend.nix
+        ];
+        cdk-runner-02 = makeRunnerVps "cdk-runner-02" [ "fuzz-b" ] [ ];
 
         cdk-mint-01 = makeMintVps "cdk-mint-01";
       };
